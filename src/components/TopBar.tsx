@@ -15,12 +15,12 @@ export default function TopBar({ user }: { user: User }) {
   }
 
   return (
-    <header className="h-12 bg-white border-b border-gray-200 flex items-center px-5 gap-3 sticky top-0 z-50">
-      <span className="font-bold text-sm flex-1">📚 知識メモ</span>
+    <header className="h-11 bg-white border-b border-gray-200 flex items-center px-6 gap-4 sticky top-0 z-50">
+      <span className="font-semibold text-sm tracking-tight flex-1">知識メモ</span>
       <span className="text-xs text-gray-400">{user.email}</span>
       <button
         onClick={signOut}
-        className="text-xs text-gray-500 border border-gray-200 rounded px-2.5 py-1 hover:bg-gray-50"
+        className="text-xs text-gray-500 border border-gray-200 px-2.5 py-1 hover:bg-gray-50 transition-colors"
       >
         ログアウト
       </button>
