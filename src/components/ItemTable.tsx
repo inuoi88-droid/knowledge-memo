@@ -27,16 +27,21 @@ export default function ItemTable({ shelf, items }: { shelf: Shelf; items: Item[
 
   async function addItem() {
     if (!title.trim()) return
-    await supabase.from('items').insert({
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const { error } = await supabase.from('items').insert({
       shelf_id: shelf.id,
+      user_id: user.id,
       title: title.trim(),
       author: author.trim() || null,
       url: url.trim() || null,
       source_type: srcType,
     })
-    setTitle(''); setAuthor(''); setUrl('')
-    setShowForm(false)
-    router.refresh()
+    if (!error) {
+      setTitle(''); setAuthor(''); setUrl('')
+      setShowForm(false)
+      router.refresh()
+    }
   }
 
   async function deleteItem(id: string) {

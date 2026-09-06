@@ -13,10 +13,14 @@ export default function ShelfGrid({ shelves }: { shelves: Shelf[] }) {
 
   async function addShelf() {
     if (!name.trim()) return
-    await supabase.from('shelves').insert({ name: name.trim() })
-    setName('')
-    setShowForm(false)
-    router.refresh()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const { error } = await supabase.from('shelves').insert({ name: name.trim(), user_id: user.id })
+    if (!error) {
+      setName('')
+      setShowForm(false)
+      router.refresh()
+    }
   }
 
   async function deleteShelf(id: string) {

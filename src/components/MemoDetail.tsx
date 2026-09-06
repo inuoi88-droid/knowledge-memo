@@ -40,13 +40,16 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
       ? tagInput.split(/[,、\s]+/).map(t => t.replace(/^#/, '').trim()).filter(Boolean)
       : []
 
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+
     if (tab === 'qa') {
       if (!question.trim() || !answer.trim()) { alert('Q と A の両方を入力してください。'); return }
-      await supabase.from('memos').insert({ item_id: item.id, type: 'qa', question: question.trim(), answer: answer.trim(), tags })
+      await supabase.from('memos').insert({ item_id: item.id, user_id: user.id, type: 'qa', question: question.trim(), answer: answer.trim(), tags })
       setQuestion(''); setAnswer('')
     } else {
       if (!text.trim()) return
-      await supabase.from('memos').insert({ item_id: item.id, type: tab, text: text.trim(), tags })
+      await supabase.from('memos').insert({ item_id: item.id, user_id: user.id, type: tab, text: text.trim(), tags })
       setText('')
     }
     setTagInput('')
