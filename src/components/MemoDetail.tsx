@@ -57,6 +57,12 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
   const [bulkText, setBulkText] = useState('')
   const [bulkStatus, setBulkStatus] = useState<string | null>(null)
 
+  const [editingMemoId, setEditingMemoId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  const [editQuestion, setEditQuestion] = useState('')
+  const [editAnswer, setEditAnswer] = useState('')
+  const [editTagInput, setEditTagInput] = useState('')
+
   const allTags = [...new Set(memos.flatMap(m => m.tags ?? []))].sort()
   const filtered = activeTag ? memos.filter(m => m.tags?.includes(activeTag)) : memos
 
@@ -89,6 +95,38 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
   async function deleteMemo(id: string) {
     await supabase.from('memos').delete().eq('id', id)
     router.refresh()
+  }
+
+  function startEditMemo(m: Memo) {
+    setEditingMemoId(m.id)
+    setEditText(m.text ?? '')
+    setEditQuestion(m.question ?? '')
+    setEditAnswer(m.answer ?? '')
+    setEditTagInput((m.tags ?? []).join(' '))
+  }
+
+  async function saveEditMemo(m: Memo) {
+    const tags = editTagInput.trim()
+      ? editTagInput.split(/[,、\s]+/).map(t => t.replace(/^#/, '').trim()).filter(Boolean)
+      : []
+
+    const updates = m.type === 'qa'
+      ? (() => {
+          if (!editQuestion.trim() || !editAnswer.trim()) { alert('Q と A の両方を入力してください。'); return null }
+          return { question: editQuestion.trim(), answer: editAnswer.trim(), tags }
+        })()
+      : (() => {
+          if (!editText.trim()) { alert('内容を入力してください。'); return null }
+          return { text: editText.trim(), tags }
+        })()
+
+    if (!updates) return
+
+    const { error } = await supabase.from('memos').update(updates).eq('id', m.id)
+    if (!error) {
+      setEditingMemoId(null)
+      router.refresh()
+    }
   }
 
   const bulkRows = parseBulkQA(bulkText)
@@ -269,23 +307,55 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
                 <span className={`text-xs font-semibold px-2 py-0.5 ${BADGE_COLORS[m.type]}`}>
                   {TYPE_LABELS[m.type]}
                 </span>
-                <button onClick={() => deleteMemo(m.id)} className="text-xs text-red-400 border border-red-200 px-2 py-0.5 hover:bg-red-50 transition-colors">削除</button>
+                {editingMemoId !== m.id && (
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => startEditMemo(m)} className="text-xs text-gray-500 border border-gray-200 px-2 py-0.5 hover:bg-white transition-colors">編集</button>
+                    <button onClick={() => deleteMemo(m.id)} className="text-xs text-red-400 border border-red-200 px-2 py-0.5 hover:bg-red-50 transition-colors">削除</button>
+                  </div>
+                )}
               </div>
 
-              {m.type === 'qa' ? (
-                <QACard question={m.question!} answer={m.answer!} />
-              ) : (
-                <p className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</p>
-              )}
-
-              {m.tags && m.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-2.5">
-                  {m.tags.map(t => (
-                    <span key={t} onClick={() => setActiveTag(t)} className="text-xs bg-white/70 text-gray-600 border border-gray-300 px-2 py-0.5 cursor-pointer hover:bg-white transition-colors">#{t}</span>
-                  ))}
+              {editingMemoId === m.id ? (
+                <div className="flex flex-col gap-2">
+                  {m.type === 'qa' ? (
+                    <>
+                      <label className="text-xs text-gray-400">Q（問い）</label>
+                      <textarea value={editQuestion} onChange={e => setEditQuestion(e.target.value)} rows={2}
+                        className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans bg-white" />
+                      <label className="text-xs text-gray-400">A（答え）</label>
+                      <textarea value={editAnswer} onChange={e => setEditAnswer(e.target.value)} rows={2}
+                        className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans bg-white" />
+                    </>
+                  ) : (
+                    <textarea value={editText} onChange={e => setEditText(e.target.value)} rows={3}
+                      className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans bg-white" />
+                  )}
+                  <input value={editTagInput} onChange={e => setEditTagInput(e.target.value)}
+                    placeholder="タグ（カンマ区切り、任意）"
+                    className="text-xs px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400 bg-white" />
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => saveEditMemo(m)} className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors">保存</button>
+                    <button onClick={() => setEditingMemoId(null)} className="text-xs border border-gray-200 px-3 py-1.5 hover:bg-white transition-colors">キャンセル</button>
+                  </div>
                 </div>
+              ) : (
+                <>
+                  {m.type === 'qa' ? (
+                    <QACard question={m.question!} answer={m.answer!} />
+                  ) : (
+                    <p className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</p>
+                  )}
+
+                  {m.tags && m.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2.5">
+                      {m.tags.map(t => (
+                        <span key={t} onClick={() => setActiveTag(t)} className="text-xs bg-white/70 text-gray-600 border border-gray-300 px-2 py-0.5 cursor-pointer hover:bg-white transition-colors">#{t}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-xs text-gray-300 mt-2">{new Date(m.created_at).toLocaleDateString('ja-JP')}</div>
+                </>
               )}
-              <div className="text-xs text-gray-300 mt-2">{new Date(m.created_at).toLocaleDateString('ja-JP')}</div>
             </div>
           ))}
         </div>
