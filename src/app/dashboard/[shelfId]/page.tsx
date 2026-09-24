@@ -8,7 +8,7 @@ export default async function ShelfPage({ params }: { params: Promise<{ shelfId:
   const supabase = await createClient()
   const user = await getUser()
 
-  const [{ data: shelf }, { data: items }] = await Promise.all([
+  const [{ data: shelf }, { data: items }, { data: allShelves }] = await Promise.all([
     supabase
       .from('shelves')
       .select('*')
@@ -19,6 +19,11 @@ export default async function ShelfPage({ params }: { params: Promise<{ shelfId:
       .from('items')
       .select('*, memos(id)')
       .eq('shelf_id', shelfId)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('shelves')
+      .select('*')
+      .eq('user_id', user!.id)
       .order('created_at', { ascending: false }),
   ])
 
@@ -32,7 +37,7 @@ export default async function ShelfPage({ params }: { params: Promise<{ shelfId:
   return (
     <div>
       <Breadcrumb shelf={shelf} />
-      <ItemTable shelf={shelf} items={itemsWithCount} />
+      <ItemTable shelf={shelf} items={itemsWithCount} allShelves={allShelves ?? []} />
     </div>
   )
 }
