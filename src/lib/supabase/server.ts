@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { cache } from 'react'
 
 export async function createClient() {
   const cookieStore = await cookies()
@@ -20,3 +21,11 @@ export async function createClient() {
     }
   )
 }
+
+// layout + page など同一リクエスト内で何度呼ばれても、Supabase Authへの
+// ネットワーク往復は1回だけになるようReactのcache()で結果を共有する
+export const getUser = cache(async () => {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  return user
+})

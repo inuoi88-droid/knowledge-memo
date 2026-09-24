@@ -20,6 +20,27 @@ const BADGE_COLORS: Record<MemoType, string> = {
   qa: 'bg-violet-100 text-violet-800',
 }
 
+// Googleスプレッドシートから「質問<Tab>回答<Tab>タグ(任意)」をコピーしてそのまま貼り付けられる形式
+const BULK_HEADER_Q = ['question', 'q', '質問', '問題', '問い']
+const BULK_HEADER_A = ['answer', 'a', '回答', '答え']
+
+function parseBulkQA(text: string) {
+  const rows = text
+    .split(/\r?\n/)
+    .map(line => line.split('\t').map(cell => cell.trim()))
+    .filter(cols => cols.length >= 2 && cols[0] && cols[1])
+
+  if (rows.length > 0 && BULK_HEADER_Q.includes(rows[0][0].toLowerCase()) && BULK_HEADER_A.includes(rows[0][1].toLowerCase())) {
+    rows.shift()
+  }
+
+  return rows.map(cols => ({
+    question: cols[0],
+    answer: cols[1],
+    tags: cols[2] ? cols[2].split(/[,、\s]+/).map(t => t.replace(/^#/, '').trim()).filter(Boolean) : [],
+  }))
+}
+
 export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] }) {
   const router = useRouter()
   const supabase = createClient()
@@ -32,6 +53,9 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [reviewTag, setReviewTag] = useState<string | null>(null)
   const [showReview, setShowReview] = useState(false)
+  const [showBulkImport, setShowBulkImport] = useState(false)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkStatus, setBulkStatus] = useState<string | null>(null)
 
   const allTags = [...new Set(memos.flatMap(m => m.tags ?? []))].sort()
   const filtered = activeTag ? memos.filter(m => m.tags?.includes(activeTag)) : memos
@@ -64,6 +88,35 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
 
   async function deleteMemo(id: string) {
     await supabase.from('memos').delete().eq('id', id)
+    router.refresh()
+  }
+
+  const bulkRows = parseBulkQA(bulkText)
+
+  async function importBulkQA() {
+    if (bulkRows.length === 0) {
+      setBulkStatus('取り込めるQ&Aが見つかりませんでした。「質問→Tab→回答」の形で貼り付けてください。')
+      return
+    }
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const { error } = await supabase.from('memos').insert(
+      bulkRows.map(r => ({
+        item_id: item.id,
+        user_id: user.id,
+        type: 'qa' as const,
+        question: r.question,
+        answer: r.answer,
+        tags: r.tags,
+      }))
+    )
+    if (error) {
+      setBulkStatus(`インポートに失敗しました: ${error.message}`)
+      return
+    }
+    setBulkText('')
+    setBulkStatus(null)
+    setShowBulkImport(false)
     router.refresh()
   }
 
@@ -127,12 +180,46 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
 
         {tab === 'qa' ? (
           <div className="flex flex-col gap-2 mb-3">
-            <label className="text-xs text-gray-400">Q（問い）</label>
-            <textarea value={question} onChange={e => setQuestion(e.target.value)} placeholder="例：習慣化に最も重要なことは？" rows={2}
-              className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans" />
-            <label className="text-xs text-gray-400">A（答え）</label>
-            <textarea value={answer} onChange={e => setAnswer(e.target.value)} placeholder="例：小さく始めて継続すること" rows={2}
-              className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans" />
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-gray-400">Q（問い）</label>
+              <button
+                type="button"
+                onClick={() => { setShowBulkImport(v => !v); setBulkStatus(null) }}
+                className="text-xs text-blue-500 hover:underline"
+              >
+                {showBulkImport ? '個別入力に戻る' : '📋 スプレッドシートからまとめて貼り付け'}
+              </button>
+            </div>
+
+            {showBulkImport ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  Googleスプレッドシートで「質問」「回答」「タグ（任意・スペース区切り）」の列を選択してコピーし、そのまま下に貼り付けてください。1行が1つのQ&Aになります。
+                </p>
+                <textarea
+                  value={bulkText}
+                  onChange={e => { setBulkText(e.target.value); setBulkStatus(null) }}
+                  placeholder={'習慣化に最も重要なことは？\t小さく始めて継続すること\t習慣 自己啓発\n複利とは？\t利息が利息を生む仕組み'}
+                  rows={6}
+                  className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-mono"
+                />
+                <div className="flex items-center gap-2">
+                  <button onClick={importBulkQA} disabled={bulkRows.length === 0}
+                    className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 disabled:opacity-40 transition-colors">
+                    {bulkRows.length}件をインポート
+                  </button>
+                  {bulkStatus && <span className="text-xs text-red-500">{bulkStatus}</span>}
+                </div>
+              </div>
+            ) : (
+              <>
+                <textarea value={question} onChange={e => setQuestion(e.target.value)} placeholder="例：習慣化に最も重要なことは？" rows={2}
+                  className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans" />
+                <label className="text-xs text-gray-400">A（答え）</label>
+                <textarea value={answer} onChange={e => setAnswer(e.target.value)} placeholder="例：小さく始めて継続すること" rows={2}
+                  className="text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans" />
+              </>
+            )}
           </div>
         ) : (
           <textarea value={text} onChange={e => setText(e.target.value)}
@@ -142,13 +229,15 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
             className="w-full text-sm px-3 py-2 border border-gray-200 outline-none focus:border-gray-400 resize-none font-sans mb-3" />
         )}
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <input value={tagInput} onChange={e => setTagInput(e.target.value)}
-            placeholder="タグ（カンマ区切り、任意）"
-            className="flex-1 min-w-36 text-xs px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
-          <span className="text-xs text-gray-400">Ctrl+Enter で追加</span>
-          <button onClick={addMemo} className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors">追加</button>
-        </div>
+        {!(tab === 'qa' && showBulkImport) && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <input value={tagInput} onChange={e => setTagInput(e.target.value)}
+              placeholder="タグ（カンマ区切り、任意）"
+              className="flex-1 min-w-36 text-xs px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
+            <span className="text-xs text-gray-400">Ctrl+Enter で追加</span>
+            <button onClick={addMemo} className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors">追加</button>
+          </div>
+        )}
       </div>
 
       {/* タグフィルター */}
