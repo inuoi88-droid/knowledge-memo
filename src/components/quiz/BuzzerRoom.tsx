@@ -6,7 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { Quiz } from '@/types'
 import { shuffle, toQuiz } from '@/lib/quiz'
 import { readLocalRoomQuizzes } from '@/lib/room'
-import { ANSWER_LIMIT_MS, INITIAL_ROOM_STATE, createHostEngine, type HostEngine, type RoomState } from '@/lib/buzzerEngine'
+import { INITIAL_ROOM_STATE, createHostEngine, type HostEngine, type RoomState } from '@/lib/buzzerEngine'
 import { sfx, unlockSound } from '@/lib/sound'
 import { btn, card, input } from '@/lib/ui'
 import ProgressiveText from './ProgressiveText'
@@ -18,6 +18,9 @@ interface Me { id: string; name: string }
 
 const SPEEDS = { slow: { label: 'ゆっくり', ms: 170 }, normal: { label: 'ふつう', ms: 110 }, fast: { label: 'はやい', ms: 70 } } as const
 type Speed = keyof typeof SPEEDS
+const BUZZ_WINDOWS = [3000, 5000, 10000, 20000, null] as const
+const ANSWER_LIMITS = [5000, 10000, 15000, 30000, null] as const
+const limitLabel = (ms: number | null) => (ms === null ? '無制限' : `${ms / 1000}秒`)
 
 export default function BuzzerRoom(props: { code: string; setId: string | null; local: boolean; wantsHost: boolean }) {
   const [me, setMe] = useState<Me | null>(null)
@@ -106,6 +109,8 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
   const [random, setRandom] = useState(true)
   const [count, setCount] = useState(10)
   const [speed, setSpeed] = useState<Speed>('normal')
+  const [buzzWindow, setBuzzWindow] = useState<number | null>(5000)
+  const [answerLimit, setAnswerLimit] = useState<number | null>(15000)
 
   const apply = useCallback((next: RoomState) => {
     const prev = viewRef.current
@@ -239,7 +244,11 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
   function startGame() {
     if (!pool) return
     const picked = random ? shuffle(pool.quizzes) : pool.quizzes
-    engineRef.current?.start(count > 0 ? picked.slice(0, count) : picked, SPEEDS[speed].ms, membersRef.current)
+    engineRef.current?.start(
+      count > 0 ? picked.slice(0, count) : picked,
+      { charMs: SPEEDS[speed].ms, buzzWindowMs: buzzWindow, answerLimitMs: answerLimit },
+      membersRef.current,
+    )
   }
 
   async function copyInvite() {
@@ -311,6 +320,16 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
                         <Opt key={s} active={speed === s} onClick={() => setSpeed(s)}>{SPEEDS[s].label}</Opt>
                       ))}
                     </Setting>
+                    <Setting label="押せる時間（問題文が出きってから）">
+                      {BUZZ_WINDOWS.map(ms => (
+                        <Opt key={String(ms)} active={buzzWindow === ms} onClick={() => setBuzzWindow(ms)}>{limitLabel(ms)}</Opt>
+                      ))}
+                    </Setting>
+                    <Setting label="回答時間（押してから）">
+                      {ANSWER_LIMITS.map(ms => (
+                        <Opt key={String(ms)} active={answerLimit === ms} onClick={() => setAnswerLimit(ms)}>{limitLabel(ms)}</Opt>
+                      ))}
+                    </Setting>
                   </div>
                   <button onClick={startGame} disabled={status !== 'connected'} className={`${btn.primary} py-3 text-base`}>
                     スタート（{members.length}人）
@@ -334,7 +353,10 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
           <div className={`${card} overflow-hidden`}>
             <div className="flex items-center justify-between border-b border-gray-100 px-5 py-2.5">
               <span className="text-sm font-bold text-gray-700">第{view.index + 1}問 <span className="font-normal text-gray-400">/ {view.total}</span></span>
-              <DifficultyBadge level={view.difficulty} />
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-400">⏱ 押せる {limitLabel(view.buzzWindowMs)} ・ 回答 {limitLabel(view.answerLimitMs)}</span>
+                <DifficultyBadge level={view.difficulty} />
+              </div>
             </div>
 
             <div className="min-h-[140px] px-6 py-6">
@@ -358,7 +380,16 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
               </div>
             )}
 
-            <div className="border-t border-gray-100 p-4">
+            <div className="flex flex-col gap-3 border-t border-gray-100 p-4">
+              {view.phase === 'reading' && view.buzzWindowMs !== null && (
+                <TimeBar
+                  key={view.readSeq}
+                  startAt={readStart === null ? null : readStart + Math.max(0, view.question.length - view.readFrom) * view.charMs}
+                  totalMs={view.buzzWindowMs}
+                  pendingLabel={`問題文を表示中… 出きってから${limitLabel(view.buzzWindowMs)}押せます`}
+                  label="押せるのは"
+                />
+              )}
               {view.phase === 'reading' && (
                 view.lockedOut.includes(me.id) ? (
                   <div className="rounded-xl bg-gray-100 py-4 text-center text-sm text-gray-500">お手つき中（この問題は押せません）</div>
@@ -372,10 +403,10 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
 
               {view.phase === 'buzzed' && view.buzzer && (
                 <div className="flex flex-col gap-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-lg font-bold text-rose-600">🔔 {iAmBuzzer ? 'あなた' : `${view.buzzer.name}さん`}が押しました！</div>
-                    {view.buzzAnswer === null && <Countdown key={view.buzzSeq} startedAt={buzzStart} totalMs={ANSWER_LIMIT_MS} />}
-                  </div>
+                  <div className="text-lg font-bold text-rose-600">🔔 {iAmBuzzer ? 'あなた' : `${view.buzzer.name}さん`}が押しました！</div>
+                  {view.buzzAnswer === null && view.answerLimitMs !== null && (
+                    <TimeBar key={view.buzzSeq} startAt={buzzStart} totalMs={view.answerLimitMs} label="回答時間" urgentTone />
+                  )}
 
                   {iAmBuzzer && view.buzzAnswer === null && (
                     <div className="flex gap-2">
@@ -514,17 +545,47 @@ function Opt({ active, onClick, children }: { active: boolean; onClick: () => vo
   )
 }
 
-function Countdown({ startedAt, totalMs }: { startedAt: number | null; totalMs: number }) {
-  const [left, setLeft] = useState(totalMs)
+// startAt（performance.now 基準）から totalMs を数える残り時間バー。startAt 前は満タンで待機表示。
+function TimeBar({
+  startAt,
+  totalMs,
+  label,
+  pendingLabel,
+  urgentTone = false,
+}: {
+  startAt: number | null
+  totalMs: number
+  label: string
+  pendingLabel?: string
+  urgentTone?: boolean
+}) {
+  const [left, setLeft] = useState<number | null>(null)
   useEffect(() => {
-    if (startedAt === null) return
-    const id = setInterval(() => setLeft(Math.max(0, totalMs - (performance.now() - startedAt))), 200)
+    if (startAt === null) return
+    const id = setInterval(() => {
+      const now = performance.now()
+      setLeft(now < startAt ? null : Math.max(0, totalMs - (now - startAt)))
+    }, 100)
     return () => clearInterval(id)
-  }, [startedAt, totalMs])
-  const sec = Math.ceil(left / 1000)
+  }, [startAt, totalMs])
+
+  const waiting = left === null
+  const ms = left ?? totalMs
+  const sec = Math.ceil(ms / 1000)
+  const urgent = !waiting && sec <= 3
+  const barColor = urgent ? 'bg-rose-500' : waiting ? 'bg-gray-300' : urgentTone ? 'bg-amber-400' : 'bg-indigo-500'
+
   return (
-    <span className={`rounded-full px-3 py-1 font-mono text-sm font-bold tabular-nums ${sec <= 5 ? 'bg-rose-100 text-rose-700' : 'bg-gray-100 text-gray-700'}`}>
-      残り {sec}秒
-    </span>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="text-gray-500">{waiting && pendingLabel ? pendingLabel : label}</span>
+        <span className={`font-mono text-sm font-bold tabular-nums ${urgent ? 'text-rose-600' : 'text-gray-700'}`}>
+          {waiting && pendingLabel ? limitLabel(totalMs) : `残り ${sec}秒`}
+        </span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+        <div className={`h-full rounded-full transition-[width] duration-100 ease-linear ${barColor}`} style={{ width: `${(ms / totalMs) * 100}%` }} />
+      </div>
+    </div>
   )
 }

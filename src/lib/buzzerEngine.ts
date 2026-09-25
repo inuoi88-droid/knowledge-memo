@@ -19,6 +19,9 @@ export interface RoomState {
   difficulty: number | null
   tags: string[]
   charMs: number
+  // 問題文が出きってから押せる時間 / 押してから回答できる時間。null は無制限
+  buzzWindowMs: number | null
+  answerLimitMs: number | null
   readSeq: number
   readFrom: number
   paused: number | null
@@ -41,6 +44,8 @@ export const INITIAL_ROOM_STATE: RoomState = {
   difficulty: null,
   tags: [],
   charMs: 110,
+  buzzWindowMs: 5000,
+  answerLimitMs: 15000,
   readSeq: 0,
   readFrom: 0,
   paused: null,
@@ -54,8 +59,11 @@ export const INITIAL_ROOM_STATE: RoomState = {
   scores: {},
 }
 
-export const ANSWER_LIMIT_MS = 15000
-const AFTER_READ_MS = 6000
+export interface RoomSettings {
+  charMs: number
+  buzzWindowMs: number | null
+  answerLimitMs: number | null
+}
 
 export type HostEngine = ReturnType<typeof createHostEngine>
 
@@ -91,11 +99,12 @@ export function createHostEngine(opts: {
     clearTimers()
     readStartedAt = performance.now()
     publish(next)
+    if (next.buzzWindowMs === null) return
     const seq = next.readSeq
     const remaining = Math.max(0, next.question.length - next.readFrom) * next.charMs
     readTimer = setTimeout(() => {
       if (state.phase === 'reading' && state.readSeq === seq) reveal(null)
-    }, remaining + AFTER_READ_MS)
+    }, remaining + next.buzzWindowMs)
   }
 
   function reveal(result: RoomResult | null) {
@@ -180,11 +189,11 @@ export function createHostEngine(opts: {
   }
 
   return {
-    start(quizzes: Quiz[], charMs: number, members: { id: string; name: string }[]) {
+    start(quizzes: Quiz[], settings: RoomSettings, members: { id: string; name: string }[]) {
       order = quizzes
       state = {
         ...state,
-        charMs,
+        ...settings,
         scores: Object.fromEntries(members.map(m => [m.id, { name: m.name, score: 0 }])),
       }
       goTo(0)
@@ -200,12 +209,13 @@ export function createHostEngine(opts: {
       const scores = state.scores[p.id] ? state.scores : { ...state.scores, [p.id]: { name: p.name, score: 0 } }
       const seq = state.buzzSeq + 1
       publish({ ...state, phase: 'buzzed', paused: revealed, buzzer: p, buzzAnswer: null, buzzSeq: seq, result: null, scores })
+      if (state.answerLimitMs === null) return
       answerTimer = setTimeout(() => {
         if (state.phase === 'buzzed' && state.buzzSeq === seq && state.buzzAnswer === null) {
-          state = { ...state, buzzAnswer: '（時間切れ）' }
+          state = { ...state, buzzAnswer: '時間切れ' }
           judge(false)
         }
-      }, ANSWER_LIMIT_MS)
+      }, state.answerLimitMs)
     },
 
     answer(p: { id: string; text: string }) {
@@ -213,7 +223,7 @@ export function createHostEngine(opts: {
       if (answerTimer) clearTimeout(answerTimer)
       answerTimer = null
       const text = p.text.trim()
-      state = { ...state, buzzAnswer: text || '（無回答）' }
+      state = { ...state, buzzAnswer: text || '無回答' }
       const q = current()
       if (!text) return judge(false)
       if (q && isCorrectAnswer(text, q.answer)) return judge(true)
@@ -227,7 +237,15 @@ export function createHostEngine(opts: {
 
     backToLobby() {
       clearTimers()
-      publish({ ...INITIAL_ROOM_STATE, title: state.title, readSeq: state.readSeq, buzzSeq: state.buzzSeq })
+      publish({
+        ...INITIAL_ROOM_STATE,
+        title: state.title,
+        charMs: state.charMs,
+        buzzWindowMs: state.buzzWindowMs,
+        answerLimitMs: state.answerLimitMs,
+        readSeq: state.readSeq,
+        buzzSeq: state.buzzSeq,
+      })
     },
 
     resync: () => opts.send(state),
