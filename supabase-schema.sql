@@ -61,3 +61,56 @@ create policy "Own items" on public.items for all
 drop policy if exists "Own memos" on public.memos;
 create policy "Own memos" on public.memos for all
   using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+
+-- ▼ クイズ機能（解説・難易度・クイズセット・共有）
+
+alter table public.memos add column if not exists explanation text;
+alter table public.memos add column if not exists difficulty smallint
+  check (difficulty between 1 and 5);
+
+create table if not exists public.quiz_sets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  title text not null,
+  description text,
+  author_name text,
+  is_public boolean not null default false,
+  created_at timestamptz not null default now()
+);
+create index if not exists quiz_sets_user_id_idx on public.quiz_sets (user_id);
+create index if not exists quiz_sets_public_created_idx on public.quiz_sets (created_at desc) where is_public;
+
+create table if not exists public.quiz_set_items (
+  quiz_set_id uuid not null references public.quiz_sets on delete cascade,
+  memo_id uuid not null references public.memos on delete cascade,
+  position int not null default 0,
+  primary key (quiz_set_id, memo_id)
+);
+create index if not exists quiz_set_items_memo_id_idx on public.quiz_set_items (memo_id);
+
+alter table public.quiz_sets enable row level security;
+alter table public.quiz_set_items enable row level security;
+
+create policy "Own quiz sets" on public.quiz_sets for all to authenticated
+  using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "Public quiz sets are readable" on public.quiz_sets for select to anon, authenticated
+  using (is_public);
+
+create policy "Own quiz set items" on public.quiz_set_items for all to authenticated
+  using (exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.user_id = (select auth.uid())))
+  with check (
+    exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.user_id = (select auth.uid()))
+    and exists (select 1 from public.memos m where m.id = memo_id and m.user_id = (select auth.uid()))
+  );
+create policy "Public quiz set items are readable" on public.quiz_set_items for select to anon, authenticated
+  using (exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.is_public));
+
+-- 公開セットに入っているクイズだけは、他の人（未ログイン含む）も読める
+create policy "Quizzes in public sets are readable" on public.memos for select to anon, authenticated
+  using (
+    type = 'qa' and exists (
+      select 1 from public.quiz_set_items i
+      join public.quiz_sets s on s.id = i.quiz_set_id
+      where i.memo_id = memos.id and s.is_public
+    )
+  );

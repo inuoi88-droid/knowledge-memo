@@ -17,7 +17,7 @@ export default function LoginPage() {
         <div className="text-4xl mb-4">📚</div>
         <h1 className="text-xl font-bold mb-2">知識メモ</h1>
         <p className="text-sm text-gray-500 mb-8">
-          本・YouTube・Webから得た知識を<br />整理・復習するアプリ
+          本・YouTube・Webから得た知識を<br />整理して、クイズで楽しむアプリ
         </p>
         <button
           onClick={signInWithGoogle}

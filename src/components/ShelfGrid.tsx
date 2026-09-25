@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Shelf } from '@/types'
+import { btn, card, input } from '@/lib/ui'
 
 export default function ShelfGrid({ shelves }: { shelves: Shelf[] }) {
   const router = useRouter()
@@ -46,72 +48,63 @@ export default function ShelfGrid({ shelves }: { shelves: Shelf[] }) {
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">本棚</span>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors"
-        >
-          ＋ 本棚を追加
-        </button>
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-base font-bold text-gray-900">本棚</h2>
+        <button onClick={() => setShowForm(v => !v)} className={btn.primary}>＋ 本棚を追加</button>
       </div>
 
       {showForm && (
-        <div className="bg-white border border-gray-200 p-3 mb-4 flex gap-2">
+        <div className={`${card} mb-4 flex flex-wrap gap-2 p-3`}>
           <input
             autoFocus
             value={name}
             onChange={e => setName(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && addShelf()}
             placeholder="本棚の名前（例：ビジネス、YouTube）"
-            className="flex-1 text-sm px-3 py-1.5 border border-gray-200 outline-none focus:border-gray-400"
+            className={`${input} min-w-48 flex-1`}
           />
-          <button onClick={addShelf} className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors">追加</button>
-          <button onClick={() => setShowForm(false)} className="text-xs border border-gray-200 px-3 py-1.5 hover:bg-gray-50 transition-colors">キャンセル</button>
+          <button onClick={addShelf} className={btn.primary}>追加</button>
+          <button onClick={() => setShowForm(false)} className={btn.secondary}>キャンセル</button>
         </div>
       )}
 
       {shelves.length === 0 ? (
-        <p className="text-center text-gray-400 text-sm py-10">本棚がありません。「＋ 本棚を追加」から作成してください。</p>
+        <p className="py-10 text-center text-sm text-gray-400">本棚がありません。「＋ 本棚を追加」から作成してください。</p>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3">
           {shelves.map(s => editingId === s.id ? (
-            <div key={s.id} className="bg-white border border-gray-400 p-3 flex flex-col gap-2">
+            <div key={s.id} className={`${card} flex flex-col gap-2 border-indigo-300 p-3`}>
               <input
                 autoFocus
                 value={editName}
                 onChange={e => setEditName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && saveEdit(s.id)}
-                className="text-sm px-2 py-1 border border-gray-200 outline-none focus:border-gray-400"
+                onKeyDown={e => {
+                  if (e.key === 'Enter') saveEdit(s.id)
+                  if (e.key === 'Escape') setEditingId(null)
+                }}
+                className={input}
               />
               <div className="flex gap-1.5">
-                <button onClick={() => saveEdit(s.id)} className="text-xs bg-gray-900 text-white px-2.5 py-1 hover:bg-gray-700 transition-colors">保存</button>
-                <button onClick={() => setEditingId(null)} className="text-xs border border-gray-200 px-2.5 py-1 hover:bg-gray-50 transition-colors">キャンセル</button>
+                <button onClick={() => saveEdit(s.id)} className={btn.small}>保存</button>
+                <button onClick={() => setEditingId(null)} className={btn.ghost}>キャンセル</button>
               </div>
             </div>
           ) : (
-            <div
-              key={s.id}
-              onClick={() => router.push(`/dashboard/${s.id}`)}
-              className="bg-white border border-gray-200 p-4 cursor-pointer hover:border-gray-400 transition-colors relative group"
-            >
-              <div className="absolute top-2 right-2 flex gap-2 text-gray-200 group-hover:text-gray-400">
-                <button
-                  onClick={e => { e.stopPropagation(); startEdit(s) }}
-                  className="hover:!text-gray-700 text-xs leading-none"
-                >✎</button>
-                <button
-                  onClick={e => { e.stopPropagation(); deleteShelf(s.id) }}
-                  className="hover:!text-red-400 text-sm leading-none"
-                >✕</button>
+            <div key={s.id} className={`${card} group relative transition-all hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-md`}>
+              <Link href={`/dashboard/${s.id}`} className="block p-4">
+                <div className="mb-3 text-2xl">📚</div>
+                <div className="pr-12 font-semibold text-gray-900">{s.name}</div>
+                <div className="mt-1 text-xs text-gray-500">{s.item_count}冊 · メモ {s.memo_count}件</div>
+              </Link>
+              <div className="absolute right-2 top-2 flex gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">
+                <button onClick={() => startEdit(s)} className={btn.ghost} title="名前を変更">✎</button>
+                <button onClick={() => deleteShelf(s.id)} className={btn.danger} title="削除">✕</button>
               </div>
-              <div className="font-semibold text-sm mb-1 pr-8">{s.name}</div>
-              <div className="text-xs text-gray-400">{s.item_count}件 · メモ {s.memo_count}件</div>
             </div>
           ))}
         </div>
       )}
-    </div>
+    </section>
   )
 }

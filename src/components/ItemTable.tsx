@@ -1,12 +1,17 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Shelf, Item, SourceType } from '@/types'
+import { btn, card, input } from '@/lib/ui'
 
 const SOURCE_LABELS: Record<SourceType, string> = {
   book: '本', youtube: 'YouTube', web: 'Web', other: 'その他',
+}
+const SOURCE_ICONS: Record<SourceType, string> = {
+  book: '📕', youtube: '▶️', web: '🌐', other: '📎',
 }
 const SOURCE_CLASSES: Record<SourceType, string> = {
   book: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -16,61 +21,87 @@ const SOURCE_CLASSES: Record<SourceType, string> = {
 }
 const SOURCES: SourceType[] = ['book', 'youtube', 'web', 'other']
 
+interface Fields { srcType: SourceType; title: string; author: string; url: string }
+const EMPTY: Fields = { srcType: 'book', title: '', author: '', url: '' }
+
+function ItemFields({ value, onChange, onSubmit, onCancel, submitLabel }: {
+  value: Fields
+  onChange: (v: Fields) => void
+  onSubmit: () => void
+  onCancel: () => void
+  submitLabel: string
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-1.5">
+        {SOURCES.map(s => (
+          <button key={s} type="button" onClick={() => onChange({ ...value, srcType: s })}
+            className={`rounded-full border px-3 py-1 text-xs transition-colors ${value.srcType === s ? SOURCE_CLASSES[s] : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}>
+            {SOURCE_ICONS[s]} {SOURCE_LABELS[s]}
+          </button>
+        ))}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <input autoFocus value={value.title} onChange={e => onChange({ ...value, title: e.target.value })}
+          onKeyDown={e => e.key === 'Enter' && onSubmit()} placeholder="タイトル *" className={input} />
+        <input value={value.author} onChange={e => onChange({ ...value, author: e.target.value })}
+          placeholder="著者 / チャンネル名（任意）" className={input} />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <input value={value.url} onChange={e => onChange({ ...value, url: e.target.value })} type="url"
+          placeholder="URL（任意）" className={`${input} min-w-48 flex-1`} />
+        <button onClick={onSubmit} className={btn.primary}>{submitLabel}</button>
+        <button onClick={onCancel} className={btn.secondary}>キャンセル</button>
+      </div>
+    </div>
+  )
+}
+
 export default function ItemTable({ shelf, items, allShelves }: { shelf: Shelf; items: Item[]; allShelves: Shelf[] }) {
   const router = useRouter()
   const supabase = createClient()
   const [showForm, setShowForm] = useState(false)
-  const [srcType, setSrcType] = useState<SourceType>('book')
-  const [title, setTitle] = useState('')
-  const [author, setAuthor] = useState('')
-  const [url, setUrl] = useState('')
-
+  const [draft, setDraft] = useState<Fields>(EMPTY)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editSrcType, setEditSrcType] = useState<SourceType>('book')
-  const [editTitle, setEditTitle] = useState('')
-  const [editAuthor, setEditAuthor] = useState('')
-  const [editUrl, setEditUrl] = useState('')
+  const [edit, setEdit] = useState<Fields>(EMPTY)
 
   async function addItem() {
-    if (!title.trim()) return
+    if (!draft.title.trim()) return
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
     const { error } = await supabase.from('items').insert({
       shelf_id: shelf.id,
       user_id: user.id,
-      title: title.trim(),
-      author: author.trim() || null,
-      url: url.trim() || null,
-      source_type: srcType,
+      title: draft.title.trim(),
+      author: draft.author.trim() || null,
+      url: draft.url.trim() || null,
+      source_type: draft.srcType,
     })
     if (!error) {
-      setTitle(''); setAuthor(''); setUrl('')
+      setDraft(EMPTY)
       setShowForm(false)
       router.refresh()
     }
   }
 
   async function deleteItem(id: string) {
-    if (!confirm('このアイテムを削除しますか？')) return
+    if (!confirm('このアイテムを削除しますか？（中のメモもすべて削除されます）')) return
     await supabase.from('items').delete().eq('id', id)
     router.refresh()
   }
 
   function startEdit(item: Item) {
     setEditingId(item.id)
-    setEditSrcType(item.source_type)
-    setEditTitle(item.title)
-    setEditAuthor(item.author ?? '')
-    setEditUrl(item.url ?? '')
+    setEdit({ srcType: item.source_type, title: item.title, author: item.author ?? '', url: item.url ?? '' })
   }
 
   async function saveEdit(id: string) {
-    if (!editTitle.trim()) return
+    if (!edit.title.trim()) return
     const { error } = await supabase.from('items').update({
-      title: editTitle.trim(),
-      author: editAuthor.trim() || null,
-      url: editUrl.trim() || null,
-      source_type: editSrcType,
+      title: edit.title.trim(),
+      author: edit.author.trim() || null,
+      url: edit.url.trim() || null,
+      source_type: edit.srcType,
     }).eq('id', id)
     if (!error) {
       setEditingId(null)
@@ -85,137 +116,61 @@ export default function ItemTable({ shelf, items, allShelves }: { shelf: Shelf; 
   }
 
   return (
-    <div>
-      <div className="flex items-center gap-3 mb-4">
-        <span className="font-semibold text-base">{shelf.name}</span>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors"
-        >
-          ＋ 追加
-        </button>
+    <section>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h1 className="text-xl font-bold text-gray-900">{shelf.name}</h1>
+        <button onClick={() => setShowForm(v => !v)} className={btn.primary}>＋ アイテムを追加</button>
       </div>
 
       {showForm && (
-        <div className="bg-white border border-gray-200 p-3 mb-4">
-          <div className="flex gap-1.5 mb-3 flex-wrap">
-            {SOURCES.map(s => (
-              <button
-                key={s}
-                onClick={() => setSrcType(s)}
-                className={`px-3 py-1 text-xs border transition-colors ${
-                  srcType === s ? SOURCE_CLASSES[s] : 'border-gray-200 text-gray-400 hover:border-gray-300'
-                }`}
-              >
-                {SOURCE_LABELS[s]}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-2 mb-2 flex-wrap">
-            <input value={title} onChange={e => setTitle(e.target.value)} placeholder="タイトル *" className="flex-1 min-w-32 text-sm px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
-            <input value={author} onChange={e => setAuthor(e.target.value)} placeholder="著者 / チャンネル名（任意）" className="flex-1 min-w-32 text-sm px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
-          </div>
-          <div className="flex gap-2">
-            <input value={url} onChange={e => setUrl(e.target.value)} type="url" placeholder="URL（任意）" className="flex-1 text-sm px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
-            <button onClick={addItem} className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors">追加</button>
-            <button onClick={() => setShowForm(false)} className="text-xs border border-gray-200 px-3 py-1.5 hover:bg-gray-50 transition-colors">キャンセル</button>
-          </div>
+        <div className={`${card} mb-4 p-4`}>
+          <ItemFields value={draft} onChange={setDraft} onSubmit={addItem} onCancel={() => setShowForm(false)} submitLabel="追加" />
         </div>
       )}
 
-      <div className="bg-white border border-gray-200 overflow-hidden">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="bg-gray-50 text-xs text-gray-400 uppercase tracking-wider border-b border-gray-200">
-              <th className="text-left px-4 py-2.5 w-24">種別</th>
-              <th className="text-left px-4 py-2.5">タイトル</th>
-              <th className="text-left px-4 py-2.5 w-28 hidden sm:table-cell">著者/作者</th>
-              <th className="text-center px-4 py-2.5 w-14">メモ</th>
-              <th className="w-44"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.length === 0 ? (
-              <tr><td colSpan={5} className="text-center text-gray-400 py-10 text-sm">アイテムがありません</td></tr>
-            ) : items.map(item => editingId === item.id ? (
-              <tr key={item.id} className="border-t border-gray-100 bg-gray-50">
-                <td colSpan={5} className="px-4 py-3">
-                  <div className="flex gap-1.5 mb-2 flex-wrap">
-                    {SOURCES.map(s => (
-                      <button
-                        key={s}
-                        onClick={() => setEditSrcType(s)}
-                        className={`px-3 py-1 text-xs border transition-colors ${
-                          editSrcType === s ? SOURCE_CLASSES[s] : 'border-gray-200 text-gray-400 hover:border-gray-300'
-                        }`}
-                      >
-                        {SOURCE_LABELS[s]}
-                      </button>
+      {items.length === 0 ? (
+        <p className="py-10 text-center text-sm text-gray-400">アイテムがありません。本や動画を追加しましょう。</p>
+      ) : (
+        <ul className={`${card} divide-y divide-gray-100 overflow-hidden`}>
+          {items.map(item => editingId === item.id ? (
+            <li key={item.id} className="bg-indigo-50/40 p-4">
+              <ItemFields value={edit} onChange={setEdit} onSubmit={() => saveEdit(item.id)} onCancel={() => setEditingId(null)} submitLabel="保存" />
+            </li>
+          ) : (
+            <li key={item.id} className="group flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 transition-colors hover:bg-gray-50">
+              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs font-medium ${SOURCE_CLASSES[item.source_type]}`}>
+                {SOURCE_ICONS[item.source_type]} {SOURCE_LABELS[item.source_type]}
+              </span>
+              <Link href={`/dashboard/${shelf.id}/${item.id}`} className="min-w-0 flex-1">
+                <div className="truncate font-medium text-gray-900 group-hover:text-indigo-700">{item.title}</div>
+                {item.author && <div className="truncate text-xs text-gray-500">{item.author}</div>}
+              </Link>
+              {item.url && (
+                <a href={item.url} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 hover:underline">リンク ↗</a>
+              )}
+              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600" title="メモ数">
+                {item.memo_count}
+              </span>
+              <div className="flex items-center gap-0.5">
+                {allShelves.length > 1 && (
+                  <select
+                    value={shelf.id}
+                    onChange={e => moveItem(item.id, e.target.value)}
+                    className="max-w-28 rounded-md border border-gray-200 bg-white px-1.5 py-1 text-xs text-gray-600 outline-none focus:border-indigo-400"
+                    title="別の本棚へ移動"
+                  >
+                    {allShelves.map(s => (
+                      <option key={s.id} value={s.id}>{s.id === shelf.id ? `📚 ${s.name}` : `→ ${s.name}`}</option>
                     ))}
-                  </div>
-                  <div className="flex gap-2 mb-2 flex-wrap">
-                    <input value={editTitle} onChange={e => setEditTitle(e.target.value)} placeholder="タイトル *" className="flex-1 min-w-32 text-sm px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
-                    <input value={editAuthor} onChange={e => setEditAuthor(e.target.value)} placeholder="著者 / チャンネル名（任意）" className="flex-1 min-w-32 text-sm px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
-                  </div>
-                  <div className="flex gap-2">
-                    <input value={editUrl} onChange={e => setEditUrl(e.target.value)} type="url" placeholder="URL（任意）" className="flex-1 text-sm px-2.5 py-1.5 border border-gray-200 outline-none focus:border-gray-400" />
-                    <button onClick={() => saveEdit(item.id)} className="text-xs bg-gray-900 text-white px-3 py-1.5 hover:bg-gray-700 transition-colors">保存</button>
-                    <button onClick={() => setEditingId(null)} className="text-xs border border-gray-200 px-3 py-1.5 hover:bg-gray-50 transition-colors">キャンセル</button>
-                  </div>
-                </td>
-              </tr>
-            ) : (
-              <tr
-                key={item.id}
-                onClick={() => router.push(`/dashboard/${shelf.id}/${item.id}`)}
-                className="cursor-pointer hover:bg-gray-50 border-t border-gray-100 transition-colors"
-              >
-                <td className="px-4 py-3">
-                  <span className={`text-xs px-2 py-0.5 border font-medium ${SOURCE_CLASSES[item.source_type]}`}>
-                    {SOURCE_LABELS[item.source_type]}
-                  </span>
-                </td>
-                <td className="px-4 py-3">
-                  <div className="font-medium text-sm">{item.title}</div>
-                  {item.url && (
-                    <a href={item.url} target="_blank" onClick={e => e.stopPropagation()}
-                      className="text-xs text-blue-500 hover:underline">リンクを開く</a>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-xs text-gray-400 hidden sm:table-cell">{item.author}</td>
-                <td className="px-4 py-3 text-center">
-                  <span className="bg-gray-100 text-gray-600 text-xs font-semibold px-2 py-0.5">{item.memo_count}</span>
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-1 flex-wrap justify-end">
-                    {allShelves.length > 1 && (
-                      <select
-                        value={shelf.id}
-                        onClick={e => e.stopPropagation()}
-                        onChange={e => { e.stopPropagation(); moveItem(item.id, e.target.value) }}
-                        className="text-xs border border-gray-200 px-1 py-0.5 outline-none focus:border-gray-400 bg-white max-w-20"
-                        title="別の本棚へ移動"
-                      >
-                        {allShelves.map(s => (
-                          <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
-                      </select>
-                    )}
-                    <button
-                      onClick={e => { e.stopPropagation(); startEdit(item) }}
-                      className="text-xs text-gray-500 border border-gray-200 px-2 py-0.5 hover:bg-gray-100 transition-colors"
-                    >編集</button>
-                    <button
-                      onClick={e => { e.stopPropagation(); deleteItem(item.id) }}
-                      className="text-xs text-red-400 border border-red-200 px-2 py-0.5 hover:bg-red-50 transition-colors"
-                    >削除</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+                  </select>
+                )}
+                <button onClick={() => startEdit(item)} className={btn.ghost}>編集</button>
+                <button onClick={() => deleteItem(item.id)} className={btn.danger}>削除</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   )
 }
