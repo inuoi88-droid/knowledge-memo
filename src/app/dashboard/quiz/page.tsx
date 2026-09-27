@@ -1,4 +1,6 @@
 import { createClient, getUser } from '@/lib/supabase/server'
+import { fetchAll } from '@/lib/supabase/fetchAll'
+import { uniqueTags } from '@/lib/quiz'
 import QuizHub from '@/components/quiz/QuizHub'
 import type { QuizSet, QuizWithSource } from '@/types'
 
@@ -18,13 +20,17 @@ export default async function QuizPage({
   const supabase = await createClient()
   const user = (await getUser())!
 
-  const [{ data: memos }, { data: mySets }, { data: publicSets }] = await Promise.all([
-    supabase
-      .from('memos')
-      .select('id, question, answer, explanation, difficulty, tags, item_id, items(title, shelf_id)')
-      .eq('user_id', user.id)
-      .eq('type', 'qa')
-      .order('created_at', { ascending: false }),
+  const [memos, { data: mySets }, { data: publicSets }] = await Promise.all([
+    fetchAll((from, to) =>
+      supabase
+        .from('memos')
+        .select('id, question, answer, explanation, difficulty, tags, item_id, items(title, shelf_id)', { count: 'exact' })
+        .eq('user_id', user.id)
+        .eq('type', 'qa')
+        .order('created_at', { ascending: false })
+        .order('id')
+        .range(from, to),
+    ),
     supabase
       .from('quiz_sets')
       .select('*, quiz_set_items(count)')
@@ -39,7 +45,7 @@ export default async function QuizPage({
       .limit(60),
   ])
 
-  const quizzes: QuizWithSource[] = (memos ?? []).map(m => {
+  const quizzes: QuizWithSource[] = memos.map(m => {
     const item = m.items as unknown as { title: string; shelf_id: string } | null
     return {
       id: m.id,
@@ -47,7 +53,7 @@ export default async function QuizPage({
       answer: m.answer ?? '',
       explanation: m.explanation ?? null,
       difficulty: m.difficulty ?? null,
-      tags: m.tags ?? [],
+      tags: uniqueTags(m.tags),
       item_id: m.item_id,
       item_title: item?.title ?? null,
       shelf_id: item?.shelf_id ?? null,

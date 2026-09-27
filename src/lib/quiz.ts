@@ -28,11 +28,17 @@ export function parseDifficulty(raw: string | null | undefined): number | null {
   return DIFFICULTY_WORDS[s] ?? null
 }
 
+export function uniqueTags(tags: readonly string[] | null | undefined): string[] {
+  return [...new Set(tags ?? [])]
+}
+
 export function parseTags(raw: string): string[] {
-  return raw
-    .split(/[,、\s]+/)
-    .map(t => t.replace(/^#/, '').trim())
-    .filter(Boolean)
+  return uniqueTags(
+    raw
+      .split(/[,、\s]+/)
+      .map(t => t.replace(/^#/, '').trim())
+      .filter(Boolean),
+  )
 }
 
 export function toQuiz(m: Pick<Memo, 'id' | 'question' | 'answer' | 'explanation' | 'difficulty' | 'tags'>): Quiz {
@@ -42,8 +48,19 @@ export function toQuiz(m: Pick<Memo, 'id' | 'question' | 'answer' | 'explanation
     answer: m.answer ?? '',
     explanation: m.explanation ?? null,
     difficulty: m.difficulty ?? null,
-    tags: m.tags ?? [],
+    tags: uniqueTags(m.tags),
   }
+}
+
+export interface TagCount {
+  name: string
+  count: number
+}
+
+export function countTags(items: readonly { tags: readonly string[] | null }[]): TagCount[] {
+  const counts = new Map<string, number>()
+  for (const it of items) for (const t of uniqueTags(it.tags)) counts.set(t, (counts.get(t) ?? 0) + 1)
+  return [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ja'))
 }
 
 export function shuffle<T>(arr: readonly T[]): T[] {

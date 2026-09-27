@@ -96,11 +96,21 @@ create policy "Own quiz sets" on public.quiz_sets for all to authenticated
 create policy "Public quiz sets are readable" on public.quiz_sets for select to anon, authenticated
   using (is_public);
 
+-- memos の公開ポリシーが quiz_set_items を読むので、ここで memos を直接読むと RLS が循環する。
+-- 所有チェックは RLS を経由しない関数で行う。
+create schema if not exists private;
+create or replace function private.owns_memo(target uuid) returns boolean
+  language sql stable security definer set search_path = ''
+  as $fn$ select exists (select 1 from public.memos m where m.id = target and m.user_id = (select auth.uid())) $fn$;
+revoke all on function private.owns_memo(uuid) from public;
+grant usage on schema private to authenticated;
+grant execute on function private.owns_memo(uuid) to authenticated;
+
 create policy "Own quiz set items" on public.quiz_set_items for all to authenticated
   using (exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.user_id = (select auth.uid())))
   with check (
     exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.user_id = (select auth.uid()))
-    and exists (select 1 from public.memos m where m.id = memo_id and m.user_id = (select auth.uid()))
+    and private.owns_memo(memo_id)
   );
 create policy "Public quiz set items are readable" on public.quiz_set_items for select to anon, authenticated
   using (exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.is_public));

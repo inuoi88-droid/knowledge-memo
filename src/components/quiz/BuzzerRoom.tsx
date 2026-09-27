@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAll } from '@/lib/supabase/fetchAll'
 import type { Quiz } from '@/types'
 import { shuffle, toQuiz } from '@/lib/quiz'
 import { readLocalRoomQuizzes } from '@/lib/room'
@@ -10,6 +11,7 @@ import { INITIAL_ROOM_STATE, createHostEngine, type HostEngine, type RoomState }
 import { sfx, unlockSound } from '@/lib/sound'
 import { btn, card, input } from '@/lib/ui'
 import ProgressiveText from './ProgressiveText'
+import CountPicker from './CountPicker'
 import { DifficultyBadge } from './Difficulty'
 
 type Role = 'host' | 'player'
@@ -73,12 +75,20 @@ async function loadPool(
 ): Promise<{ title: string; quizzes: Quiz[] } | null> {
   if (local) return readLocalRoomQuizzes(code)
   if (!setId) return null
-  const [{ data: set }, { data: rows }] = await Promise.all([
+  const [{ data: set }, rows] = await Promise.all([
     supabase.from('quiz_sets').select('title').eq('id', setId).maybeSingle(),
-    supabase.from('quiz_set_items').select('position, memos(id, question, answer, explanation, difficulty, tags)').eq('quiz_set_id', setId).order('position'),
+    fetchAll((from, to) =>
+      supabase
+        .from('quiz_set_items')
+        .select('position, memos(id, question, answer, explanation, difficulty, tags)', { count: 'exact' })
+        .eq('quiz_set_id', setId)
+        .order('position')
+        .order('memo_id')
+        .range(from, to),
+    ),
   ])
   if (!set) return null
-  const quizzes = (rows ?? [])
+  const quizzes = rows
     .map(r => r.memos as unknown as Parameters<typeof toQuiz>[0] | null)
     .filter((m): m is Parameters<typeof toQuiz>[0] => !!m)
     .map(toQuiz)
@@ -191,7 +201,7 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
   useEffect(() => {
     if (!isHost) return
     let cancelled = false
-    loadPool(supabase, code, setId, local).then(res => {
+    loadPool(supabase, code, setId, local).catch(() => null).then(res => {
       if (cancelled) return
       if (res && res.quizzes.length > 0) setPool(res)
       else setPoolError('問題を読み込めませんでした。セットが非公開か、削除された可能性があります。')
@@ -245,7 +255,7 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
     if (!pool) return
     const picked = random ? shuffle(pool.quizzes) : pool.quizzes
     engineRef.current?.start(
-      count > 0 ? picked.slice(0, count) : picked,
+      picked.slice(0, count),
       { charMs: SPEEDS[speed].ms, buzzWindowMs: buzzWindow, answerLimitMs: answerLimit },
       membersRef.current,
     )
@@ -304,13 +314,10 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
                     <p className="mt-0.5 text-xs text-gray-500">招待リンクを送って、みんなが揃ったらスタートしましょう。ホストも一緒に早押しできます。</p>
                   </div>
                   <div className="grid gap-4 sm:grid-cols-3">
-                    <Setting label="問題数">
-                      {[5, 10, 20, 0].filter(n => n === 0 || n < pool.quizzes.length).map(n => (
-                        <Opt key={n} active={(count > 0 && count < pool.quizzes.length ? count : 0) === n} onClick={() => setCount(n)}>
-                          {n === 0 ? `全部(${pool.quizzes.length})` : `${n}問`}
-                        </Opt>
-                      ))}
-                    </Setting>
+                    <div className="sm:col-span-3">
+                      <div className="mb-1.5 text-xs font-medium text-gray-500">問題数</div>
+                      <CountPicker max={pool.quizzes.length} value={Math.min(count, pool.quizzes.length)} onChange={setCount} />
+                    </div>
                     <Setting label="出題順">
                       <Opt active={random} onClick={() => setRandom(true)}>ランダム</Opt>
                       <Opt active={!random} onClick={() => setRandom(false)}>そのまま</Opt>

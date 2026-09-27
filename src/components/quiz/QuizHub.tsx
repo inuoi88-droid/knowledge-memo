@@ -6,9 +6,10 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { QuizSet, QuizWithSource } from '@/types'
 import { useDensity } from '@/lib/density'
-import { DIFFICULTY_LABELS, DIFFICULTY_LEVELS } from '@/lib/quiz'
+import { DIFFICULTY_LABELS, DIFFICULTY_LEVELS, countTags } from '@/lib/quiz'
 import { generateRoomCode, roomUrl, stashLocalRoomQuizzes } from '@/lib/room'
 import { btn, card, chip, input } from '@/lib/ui'
+import TagPicker from '@/components/TagPicker'
 import QuizRow from './QuizRow'
 import QuizPlayer from './QuizPlayer'
 import DensityToggle from './DensityToggle'
@@ -44,10 +45,11 @@ export default function QuizHub({
   const [shown, setShown] = useState(PAGE)
   const [playing, setPlaying] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [notice, setNotice] = useState<string | null>(null)
 
-  const genreCounts = new Map<string, number>()
-  for (const q of quizzes) for (const t of q.tags) genreCounts.set(t, (genreCounts.get(t) ?? 0) + 1)
-  const allGenres = [...genreCounts].sort((a, b) => b[1] - a[1])
+  const tagCounts = countTags(quizzes)
 
   const kw = keyword.trim().toLowerCase()
   const filtered = quizzes.filter(q => {
@@ -71,13 +73,32 @@ export default function QuizHub({
     setShown(PAGE)
   }
 
+  // 問題を選んでいればその問題、選んでいなければ絞り込み結果が対象
+  const usingSelection = selected.size > 0
+  const target = usingSelection ? quizzes.filter(q => selected.has(q.id)) : filtered
+  const targetLabel = usingSelection ? `選んだ${selected.size}問` : conditionLabel
+
+  function toggleSelect(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selectAllFiltered() {
+    setSelected(prev => new Set([...prev, ...filtered.map(q => q.id)]))
+  }
+
   function startLocalRoom() {
     const code = generateRoomCode()
-    stashLocalRoomQuizzes(code, conditionLabel, filtered)
+    stashLocalRoomQuizzes(code, targetLabel, target)
     router.push(roomUrl(code, { local: true }))
   }
 
   const hasFilter = genres.length > 0 || levels.length > 0 || !!kw
+  const filteredSelectedCount = filtered.filter(q => selected.has(q.id)).length
 
   return (
     <div className="flex flex-col gap-5">
@@ -104,14 +125,9 @@ export default function QuizHub({
         <>
           <div className={`${card} flex flex-col gap-3 p-4`}>
             <div className="flex flex-wrap items-start gap-2">
-              <span className="w-14 shrink-0 pt-0.5 text-xs font-medium text-gray-500">ジャンル</span>
-              <div className="flex flex-1 flex-wrap gap-1.5">
-                {allGenres.length === 0 && <span className="text-xs text-gray-400">クイズにジャンルを付けると選べるようになります</span>}
-                {allGenres.map(([g, n]) => (
-                  <button key={g} onClick={() => toggle(genres, g, setGenres)} className={chip(genres.includes(g))}>
-                    #{g} <span className="opacity-60">{n}</span>
-                  </button>
-                ))}
+              <span className="w-14 shrink-0 pt-1 text-xs font-medium text-gray-500">ジャンル</span>
+              <div className="min-w-0 flex-1">
+                <TagPicker tags={tagCounts} selected={genres} onToggle={g => toggle(genres, g, setGenres)} />
               </div>
               {genres.length > 1 && (
                 <button onClick={() => setMatchAll(v => !v)} className="text-xs text-indigo-600 hover:underline">
@@ -140,25 +156,62 @@ export default function QuizHub({
             </div>
           </div>
 
-          <div className={`${card} flex flex-wrap items-center gap-3 border-indigo-200 bg-indigo-50/60 p-3`}>
+          <div className={`${card} flex flex-wrap items-center gap-3 p-3 ${usingSelection ? 'border-amber-300 bg-amber-50/70' : 'border-indigo-200 bg-indigo-50/60'}`}>
             <div className="min-w-0 basis-full sm:basis-0 sm:flex-1">
-              <div className="truncate text-sm font-semibold text-gray-800">{conditionLabel}</div>
-              <div className="text-xs text-gray-500"><b className="text-base text-indigo-700">{filtered.length}</b> 問が該当</div>
+              {usingSelection ? (
+                <>
+                  <div className="text-sm font-semibold text-gray-800">☑ 選んだ問題</div>
+                  <div className="text-xs text-gray-500">
+                    <b className="text-base text-amber-700">{selected.size}</b> 問を選択中
+                    <button onClick={() => setSelected(new Set())} className="ml-2 text-indigo-600 hover:underline">選択を解除</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="truncate text-sm font-semibold text-gray-800">{conditionLabel}</div>
+                  <div className="text-xs text-gray-500"><b className="text-base text-indigo-700">{filtered.length}</b> 問が該当</div>
+                </>
+              )}
             </div>
-            <button onClick={() => setPlaying(true)} disabled={filtered.length === 0} className={btn.primary}>▶ ひとりで遊ぶ</button>
-            <button onClick={startLocalRoom} disabled={filtered.length === 0}
+            <button onClick={() => setPlaying(true)} disabled={target.length === 0} className={btn.primary}>▶ ひとりで遊ぶ</button>
+            <button onClick={startLocalRoom} disabled={target.length === 0}
               className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-rose-600 disabled:opacity-40">
               ⚡ 早押しで遊ぶ
             </button>
-            <button onClick={() => setCreating(true)} disabled={filtered.length === 0} className={btn.secondary}>＋ セットにする</button>
+            <button onClick={() => setCreating(true)} disabled={target.length === 0} className={btn.secondary}>＋ セットにする</button>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-4">
-            <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-gray-500">
-              <input type="checkbox" checked={revealAll} onChange={e => setRevealAll(e.target.checked)} className="accent-indigo-600" />
-              答えをすべて表示
-            </label>
-            <DensityToggle />
+          {notice && (
+            <div className="flex items-center justify-between gap-3 rounded-lg bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+              <span>✓ {notice}</span>
+              <button onClick={() => setNotice(null)} className="text-emerald-600 hover:text-emerald-800">✕</button>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <button
+              onClick={() => setSelecting(v => !v)}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${selecting ? 'border-amber-400 bg-amber-50 text-amber-800' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'}`}
+            >
+              {selecting ? '☑ 問題を選んでいます' : '☐ 問題を選ぶ'}
+            </button>
+            {selecting && (
+              <>
+                <button onClick={selectAllFiltered} disabled={filteredSelectedCount === filtered.length} className="text-xs text-indigo-600 hover:underline disabled:text-gray-300 disabled:no-underline">
+                  表示中の{filtered.length}問をすべて選ぶ
+                </button>
+                {selected.size > 0 && (
+                  <button onClick={() => setSelected(new Set())} className="text-xs text-gray-500 hover:underline">選択を解除</button>
+                )}
+              </>
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-4">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-gray-500">
+                <input type="checkbox" checked={revealAll} onChange={e => setRevealAll(e.target.checked)} className="accent-indigo-600" />
+                答えをすべて表示
+              </label>
+              <DensityToggle />
+            </div>
           </div>
 
           {quizzes.length === 0 ? (
@@ -177,6 +230,7 @@ export default function QuizHub({
                   revealAll={revealAll}
                   onTagClick={g => { if (!genres.includes(g)) setGenres([...genres, g]) }}
                   source={q.item_title && q.shelf_id ? { title: q.item_title, href: `/dashboard/${q.shelf_id}/${q.item_id}` } : null}
+                  selection={selecting ? { checked: selected.has(q.id), onToggle: () => toggleSelect(q.id) } : undefined}
                 />
               ))}
               {filtered.length > shown && (
@@ -213,13 +267,16 @@ export default function QuizHub({
         )
       )}
 
-      {playing && <QuizPlayer quizzes={filtered} title={conditionLabel} onClose={() => setPlaying(false)} />}
+      {playing && <QuizPlayer quizzes={target} title={targetLabel} onClose={() => setPlaying(false)} />}
       {creating && (
         <CreateSetDialog
-          quizIds={filtered.map(q => q.id)}
-          defaultTitle={conditionLabel === 'すべてのクイズ' ? '' : conditionLabel}
+          quizIds={target.map(q => q.id)}
+          sourceLabel={usingSelection ? '選んだ' : '条件に合う'}
+          defaultTitle={usingSelection || conditionLabel === 'すべてのクイズ' ? '' : conditionLabel}
           authorName={authorName}
+          mySets={mySets}
           onClose={() => setCreating(false)}
+          onAdded={msg => { setNotice(msg); setSelected(new Set()) }}
         />
       )}
     </div>

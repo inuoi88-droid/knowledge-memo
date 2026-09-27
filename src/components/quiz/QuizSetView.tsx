@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Quiz } from '@/types'
 import { useDensity } from '@/lib/density'
-import { DIFFICULTY_LEVELS } from '@/lib/quiz'
+import { DIFFICULTY_LEVELS, countTags } from '@/lib/quiz'
 import { generateRoomCode, roomUrl } from '@/lib/room'
 import { btn, card } from '@/lib/ui'
 import QuizRow from './QuizRow'
@@ -28,7 +28,9 @@ export default function QuizSetView({
   const [showList, setShowList] = useState(isOwner)
   const [copied, setCopied] = useState(false)
 
-  const genres = [...new Set(quizzes.flatMap(q => q.tags))]
+  const allGenres = countTags(quizzes)
+  const genres = allGenres.slice(0, 10).map(g => g.name)
+  const moreGenres = allGenres.length - genres.length
   const levelCounts = DIFFICULTY_LEVELS.map(l => ({ l, n: quizzes.filter(q => q.difficulty === l).length })).filter(x => x.n > 0)
 
   async function copyLink() {
@@ -66,6 +68,7 @@ export default function QuizSetView({
               {genres.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {genres.map(g => <span key={g} className="rounded-full bg-indigo-50 px-2 py-0.5 text-indigo-700">#{g}</span>)}
+                  {moreGenres > 0 && <span className="px-1 py-0.5 text-gray-400">ほか{moreGenres}ジャンル</span>}
                 </div>
               )}
               {levelCounts.map(({ l, n }) => (

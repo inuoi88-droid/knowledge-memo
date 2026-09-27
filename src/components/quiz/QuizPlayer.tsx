@@ -6,11 +6,11 @@ import { shuffle } from '@/lib/quiz'
 import { btn } from '@/lib/ui'
 import { DifficultyBadge } from './Difficulty'
 import ProgressiveText from './ProgressiveText'
+import CountPicker from './CountPicker'
 
 type Mode = 'normal' | 'buzzer'
 type Result = 'correct' | 'wrong'
 
-const COUNT_OPTIONS = [5, 10, 20, 0] as const
 const CHAR_MS = 110
 
 export default function QuizPlayer({
@@ -24,7 +24,7 @@ export default function QuizPlayer({
 }) {
   const [screen, setScreen] = useState<'setup' | 'playing' | 'result'>('setup')
   const [mode, setMode] = useState<Mode>('normal')
-  const [countOpt, setCountOpt] = useState<number>(quizzes.length > 10 ? 10 : 0)
+  const [count, setCount] = useState(Math.min(10, quizzes.length))
 
   const [queue, setQueue] = useState<Quiz[]>([])
   const [idx, setIdx] = useState(0)
@@ -43,7 +43,7 @@ export default function QuizPlayer({
 
   function start(pool: Quiz[], useLimit = true) {
     const picked = shuffle(pool)
-    const n = useLimit && countOpt > 0 ? Math.min(countOpt, picked.length) : picked.length
+    const n = useLimit ? Math.min(count, picked.length) : picked.length
     setQueue(picked.slice(0, n))
     setIdx(0)
     setResults({})
@@ -113,15 +113,8 @@ export default function QuizPlayer({
             </div>
 
             <div>
-              <div className="mb-2 text-xs font-medium text-gray-500">問題数</div>
-              <div className="grid grid-cols-4 gap-2">
-                {COUNT_OPTIONS.filter(c => c === 0 || c < quizzes.length).map(c => (
-                  <button key={c} onClick={() => setCountOpt(c)}
-                    className={`rounded-lg border py-2 text-sm transition-colors ${countOpt === c ? 'border-indigo-600 bg-indigo-50 font-semibold text-indigo-700' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
-                    {c === 0 ? `全部 (${quizzes.length})` : `${c}問`}
-                  </button>
-                ))}
-              </div>
+              <div className="mb-2 text-xs font-medium text-gray-500">問題数（ランダムに出題）</div>
+              <CountPicker max={quizzes.length} value={count} onChange={setCount} />
             </div>
 
             <div>

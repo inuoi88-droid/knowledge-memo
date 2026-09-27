@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { cache } from 'react'
 import { createClient, getUser } from '@/lib/supabase/server'
+import { fetchAll } from '@/lib/supabase/fetchAll'
 import type { Quiz } from '@/types'
 import { toQuiz } from '@/lib/quiz'
 import QuizSetView from '@/components/quiz/QuizSetView'
@@ -9,16 +10,20 @@ import QuizSetView from '@/components/quiz/QuizSetView'
 const loadSet = cache(async (setId: string) => {
   if (!/^[0-9a-f-]{36}$/i.test(setId)) return null
   const supabase = await createClient()
-  const [{ data: set }, { data: rows }] = await Promise.all([
+  const [{ data: set }, rows] = await Promise.all([
     supabase.from('quiz_sets').select('*').eq('id', setId).maybeSingle(),
-    supabase
-      .from('quiz_set_items')
-      .select('position, memos(id, question, answer, explanation, difficulty, tags)')
-      .eq('quiz_set_id', setId)
-      .order('position'),
+    fetchAll((from, to) =>
+      supabase
+        .from('quiz_set_items')
+        .select('position, memos(id, question, answer, explanation, difficulty, tags)', { count: 'exact' })
+        .eq('quiz_set_id', setId)
+        .order('position')
+        .order('memo_id')
+        .range(from, to),
+    ),
   ])
   if (!set) return null
-  const quizzes: Quiz[] = (rows ?? [])
+  const quizzes: Quiz[] = rows
     .map(r => r.memos as unknown as Parameters<typeof toQuiz>[0] | null)
     .filter((m): m is Parameters<typeof toQuiz>[0] => !!m)
     .map(toQuiz)

@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Item, Memo, MemoType, Quiz } from '@/types'
 import { useDensity } from '@/lib/density'
-import { DIFFICULTY_LABELS, DIFFICULTY_LEVELS, toQuiz } from '@/lib/quiz'
+import { DIFFICULTY_LABELS, DIFFICULTY_LEVELS, countTags, toQuiz } from '@/lib/quiz'
 import { btn, card, chip } from '@/lib/ui'
+import TagPicker from '@/components/TagPicker'
 import AddMemoForm, { TYPE_LABELS } from '@/components/memo/AddMemoForm'
 import EditMemoForm from '@/components/memo/EditMemoForm'
 import QuizRow from '@/components/quiz/QuizRow'
@@ -34,8 +35,8 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
 
   const quizMemos = memos.filter(m => m.type === 'qa')
   const noteMemos = memos.filter(m => m.type !== 'qa')
-  const allTags = [...new Set(memos.flatMap(m => m.tags ?? []))].sort()
-  const quizTags = [...new Set(quizMemos.flatMap(m => m.tags ?? []))].sort()
+  const allTags = countTags(memos)
+  const quizTags = countTags(quizMemos)
 
   const byTag = (m: Memo) => !activeTag || m.tags?.includes(activeTag)
   const visibleQuizzes = filter === 'all' || filter === 'qa' ? quizMemos.filter(byTag) : []
@@ -76,7 +77,7 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
             <select value={playGenre} onChange={e => setPlayGenre(e.target.value)}
               className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-indigo-400">
               <option value="">すべてのジャンル</option>
-              {quizTags.map(t => <option key={t} value={t}>#{t}</option>)}
+              {quizTags.map(t => <option key={t.name} value={t.name}>#{t.name}（{t.count}）</option>)}
             </select>
             <select value={playDifficulty} onChange={e => setPlayDifficulty(e.target.value)}
               className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-indigo-400">
@@ -114,11 +115,15 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
       </div>
 
       {allTags.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-gray-400">ジャンル・タグ：</span>
-          {allTags.map(t => (
-            <button key={t} onClick={() => setActiveTag(t === activeTag ? null : t)} className={chip(t === activeTag)}>#{t}</button>
-          ))}
+        <div className="flex items-start gap-2">
+          <span className="shrink-0 pt-1 text-xs text-gray-400">ジャンル・タグ：</span>
+          <div className="min-w-0 flex-1">
+            <TagPicker
+              tags={allTags}
+              selected={activeTag ? [activeTag] : []}
+              onToggle={t => setActiveTag(t === activeTag ? null : t)}
+            />
+          </div>
         </div>
       )}
 

@@ -1,4 +1,6 @@
 import { createClient, getUser } from '@/lib/supabase/server'
+import { fetchAll } from '@/lib/supabase/fetchAll'
+import { countTags } from '@/lib/quiz'
 import ShelfGrid from '@/components/ShelfGrid'
 import TagCloud from '@/components/TagCloud'
 
@@ -6,24 +8,24 @@ export default async function DashboardPage() {
   const supabase = await createClient()
   const user = await getUser()
 
-  const [{ data: shelves }, { data: memos }] = await Promise.all([
+  const [{ data: shelves }, memos] = await Promise.all([
     supabase
       .from('shelves')
       .select('*, items(id, memos(id))')
       .eq('user_id', user!.id)
       .order('created_at', { ascending: false }),
-    supabase
-      .from('memos')
-      .select('tags')
-      .eq('user_id', user!.id)
-      .eq('type', 'qa'),
+    fetchAll((from, to) =>
+      supabase
+        .from('memos')
+        .select('tags', { count: 'exact' })
+        .eq('user_id', user!.id)
+        .eq('type', 'qa')
+        .order('id')
+        .range(from, to),
+    ),
   ])
 
-  const genreCounts = new Map<string, number>()
-  for (const m of memos ?? []) {
-    for (const t of m.tags ?? []) genreCounts.set(t, (genreCounts.get(t) ?? 0) + 1)
-  }
-  const genres = [...genreCounts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
+  const genres = countTags(memos)
 
   // カウント整形
   const shelvesWithCount = (shelves ?? []).map(s => ({
@@ -34,7 +36,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <TagCloud genres={genres} quizCount={memos?.length ?? 0} />
+      <TagCloud genres={genres} quizCount={memos.length} />
       <ShelfGrid shelves={shelvesWithCount} />
     </div>
   )

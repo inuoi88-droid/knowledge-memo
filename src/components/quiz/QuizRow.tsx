@@ -19,6 +19,7 @@ export default function QuizRow({
   source,
   actions,
   onTagClick,
+  selection,
 }: {
   quiz: Quiz
   density: Density
@@ -26,6 +27,7 @@ export default function QuizRow({
   source?: { title: string; href: string } | null
   actions?: ReactNode
   onTagClick?: (tag: string) => void
+  selection?: { checked: boolean; onToggle: () => void }
 }) {
   const [open, setOpen] = useState(false)
   const shown = open || revealAll
@@ -54,7 +56,17 @@ export default function QuizRow({
   const hasMeta = !!quiz.difficulty || quiz.tags.length > 0 || !!source
 
   return (
-    <div className={`group ${s.row}`}>
+    <div className={`group flex items-start gap-3 ${s.row} ${selection?.checked ? 'bg-indigo-50/60' : ''}`}>
+      {selection && (
+        <input
+          type="checkbox"
+          checked={selection.checked}
+          onChange={selection.onToggle}
+          className="mt-1.5 h-4 w-4 shrink-0 cursor-pointer accent-indigo-600"
+          aria-label="この問題を選ぶ"
+        />
+      )}
+      <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 leading-relaxed">
         <p className={`min-w-0 flex-[1_1_18rem] ${s.text}`}>
           <span className="mr-1.5 font-bold text-indigo-600">Q.</span>
@@ -87,6 +99,7 @@ export default function QuizRow({
       )}
 
       {!compact && hasMeta && <div className="mt-1 flex flex-wrap items-center gap-2">{meta}</div>}
+      </div>
     </div>
   )
 }
