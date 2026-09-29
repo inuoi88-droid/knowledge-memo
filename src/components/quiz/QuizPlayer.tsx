@@ -7,6 +7,7 @@ import { btn } from '@/lib/ui'
 import { DifficultyBadge } from './Difficulty'
 import ProgressiveText from './ProgressiveText'
 import CountPicker from './CountPicker'
+import AnswerSearchLink from './AnswerSearchLink'
 
 type Mode = 'normal' | 'buzzer'
 type Result = 'correct' | 'wrong'
@@ -169,9 +170,10 @@ export default function QuizPlayer({
 
               {revealed && (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-                  <div className="flex gap-2 text-lg">
+                  <div className="flex items-baseline gap-2 text-lg">
                     <span className="font-bold text-emerald-600">A.</span>
                     <span className="font-semibold text-gray-900">{current.answer}</span>
+                    <AnswerSearchLink answer={current.answer} className="ml-auto self-center" />
                   </div>
                   {current.explanation && (
                     <p className="mt-2 whitespace-pre-wrap border-t border-emerald-100 pt-2 text-sm leading-relaxed text-gray-700">
@@ -234,6 +236,7 @@ export default function QuizPlayer({
                     <li key={q.id} className="border-l-2 border-rose-300 pl-2 text-sm">
                       <span className="text-gray-700">{q.question}</span>
                       <span className="ml-2 font-semibold text-emerald-700">→ {q.answer}</span>
+                      <AnswerSearchLink answer={q.answer} className="ml-2 align-middle" />
                     </li>
                   ))}
                 </ul>

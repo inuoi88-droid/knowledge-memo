@@ -5,6 +5,7 @@ import Link from 'next/link'
 import type { Quiz } from '@/types'
 import type { Density } from '@/lib/density'
 import { DifficultyBadge } from './Difficulty'
+import AnswerSearchLink from './AnswerSearchLink'
 
 const SIZES: Record<Density, { row: string; text: string; answer: string }> = {
   compact: { row: 'px-3 py-1.5', text: 'text-sm', answer: 'text-sm' },
@@ -72,21 +73,24 @@ export default function QuizRow({
           <span className="mr-1.5 font-bold text-indigo-600">Q.</span>
           {quiz.question}
         </p>
-        <button
-          type="button"
-          onClick={() => setOpen(v => !v)}
-          className={`min-w-0 max-w-full text-left ${s.answer}`}
-          title={shown ? 'クリックで隠す' : 'クリックで答えを表示'}
-        >
-          <span className="mr-1.5 font-bold text-emerald-600">A.</span>
-          {shown ? (
-            <span className="font-semibold text-gray-900">{quiz.answer}</span>
-          ) : (
-            <span className="inline-block rounded-md border border-dashed border-gray-300 bg-gray-50 px-3 text-xs leading-6 text-gray-400 transition-colors hover:border-emerald-400 hover:text-emerald-600">
-              クリックで表示
-            </span>
-          )}
-        </button>
+        <div className="flex min-w-0 max-w-full items-baseline gap-2">
+          <button
+            type="button"
+            onClick={() => setOpen(v => !v)}
+            className={`min-w-0 text-left ${s.answer}`}
+            title={shown ? 'クリックで隠す' : 'クリックで答えを表示'}
+          >
+            <span className="mr-1.5 font-bold text-emerald-600">A.</span>
+            {shown ? (
+              <span className="font-semibold text-gray-900">{quiz.answer}</span>
+            ) : (
+              <span className="inline-block rounded-md border border-dashed border-gray-300 bg-gray-50 px-3 text-xs leading-6 text-gray-400 transition-colors hover:border-emerald-400 hover:text-emerald-600">
+                クリックで表示
+              </span>
+            )}
+          </button>
+          {shown && <AnswerSearchLink answer={quiz.answer} />}
+        </div>
         {compact && hasMeta && <div className="flex flex-wrap items-center gap-2">{meta}</div>}
         {actions && <div className="ml-auto flex items-center gap-0.5">{actions}</div>}
       </div>

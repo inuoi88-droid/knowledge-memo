@@ -175,6 +175,12 @@ export function acceptableAnswers(answer: string): string[] {
   return [...out]
 }
 
+// 「札幌（さっぽろ）」「函館/はこだて」のような答えは、最初の表記だけで検索する
+export function answerSearchUrl(answer: string): string {
+  const first = answer.normalize('NFKC').split(/[/|]/)[0].replace(/\(.*?\)/g, '').trim()
+  return `https://www.google.com/search?q=${encodeURIComponent(first || answer)}`
+}
+
 export function isCorrectAnswer(input: string, answer: string): boolean {
   const n = normalizeAnswer(input)
   if (!n) return false

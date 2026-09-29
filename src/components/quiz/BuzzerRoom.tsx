@@ -12,6 +12,7 @@ import { sfx, unlockSound } from '@/lib/sound'
 import { btn, card, input } from '@/lib/ui'
 import ProgressiveText from './ProgressiveText'
 import CountPicker from './CountPicker'
+import AnswerSearchLink from './AnswerSearchLink'
 import { DifficultyBadge } from './Difficulty'
 
 type Role = 'host' | 'player'
@@ -454,9 +455,10 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
                         : '⏰ 時間切れ'}
                   </div>
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3">
-                    <div className="flex gap-2 text-lg">
+                    <div className="flex items-baseline gap-2 text-lg">
                       <span className="font-bold text-emerald-600">A.</span>
                       <span className="font-semibold">{view.answer}</span>
+                      {view.answer && <AnswerSearchLink answer={view.answer} className="ml-auto self-center" />}
                     </div>
                     {view.explanation && (
                       <p className="mt-2 whitespace-pre-wrap border-t border-emerald-100 pt-2 text-sm text-gray-700">
