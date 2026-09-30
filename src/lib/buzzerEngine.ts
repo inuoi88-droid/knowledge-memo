@@ -1,7 +1,9 @@
 import type { Quiz } from '@/types'
 import { isCorrectAnswer } from './quiz'
+import { INTRO_MS } from './sound'
 
-export type RoomPhase = 'lobby' | 'reading' | 'buzzed' | 'judged' | 'finished'
+// intro: 「てれん！」を鳴らして一拍おく間。問題文はまだ配信しない
+export type RoomPhase = 'lobby' | 'intro' | 'reading' | 'buzzed' | 'judged' | 'finished'
 
 export interface RoomResult {
   name: string
@@ -16,6 +18,7 @@ export interface RoomState {
   index: number
   total: number
   question: string
+  imageUrl: string | null
   difficulty: number | null
   tags: string[]
   charMs: number
@@ -41,6 +44,7 @@ export const INITIAL_ROOM_STATE: RoomState = {
   index: 0,
   total: 0,
   question: '',
+  imageUrl: null,
   difficulty: null,
   tags: [],
   charMs: 110,
@@ -80,6 +84,7 @@ export function createHostEngine(opts: {
   let readStartedAt = 0
   let readTimer: ReturnType<typeof setTimeout> | null = null
   let answerTimer: ReturnType<typeof setTimeout> | null = null
+  let introTimer: ReturnType<typeof setTimeout> | null = null
 
   const current = () => order[state.index] as Quiz | undefined
 
@@ -92,7 +97,8 @@ export function createHostEngine(opts: {
   function clearTimers() {
     if (readTimer) clearTimeout(readTimer)
     if (answerTimer) clearTimeout(answerTimer)
-    readTimer = answerTimer = null
+    if (introTimer) clearTimeout(introTimer)
+    readTimer = answerTimer = introTimer = null
   }
 
   function beginReading(next: RoomState) {
@@ -110,10 +116,13 @@ export function createHostEngine(opts: {
   function reveal(result: RoomResult | null) {
     clearTimers()
     const q = current()
+    const question = q?.question ?? state.question
     publish({
       ...state,
       phase: 'judged',
-      paused: state.question.length,
+      question,
+      imageUrl: q?.image_url ?? state.imageUrl,
+      paused: question.length,
       buzzer: null,
       result,
       answer: q?.answer ?? null,
@@ -128,17 +137,14 @@ export function createHostEngine(opts: {
       finish()
       return
     }
-    beginReading({
+    clearTimers()
+    const cleared: RoomState = {
       ...state,
-      phase: 'reading',
       index: i,
       total: order.length,
-      question: q.question,
       difficulty: q.difficulty,
       // ジャンルは答えのヒントになるので、判定が出るまで配信しない
       tags: [],
-      readSeq: state.readSeq + 1,
-      readFrom: 0,
       paused: null,
       buzzer: null,
       buzzAnswer: null,
@@ -146,7 +152,21 @@ export function createHostEngine(opts: {
       result: null,
       answer: null,
       explanation: null,
-    })
+    }
+    // 「てれん！」の間は問題文を送らず、一拍おいてから読み上げを始める
+    publish({ ...cleared, phase: 'intro', question: '', imageUrl: null })
+    introTimer = setTimeout(() => {
+      introTimer = null
+      if (state.phase !== 'intro' || state.index !== i) return
+      beginReading({
+        ...cleared,
+        phase: 'reading',
+        question: q.question,
+        imageUrl: q.image_url,
+        readSeq: state.readSeq + 1,
+        readFrom: 0,
+      })
+    }, INTRO_MS)
   }
 
   function judge(correct: boolean) {

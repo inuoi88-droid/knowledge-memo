@@ -4,18 +4,22 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import type { QuizSet, QuizWithSource } from '@/types'
+import type { Quiz, QuizProgress, QuizSet, QuizWithSource } from '@/types'
 import { useDensity } from '@/lib/density'
-import { DIFFICULTY_LABELS, DIFFICULTY_LEVELS, countTags } from '@/lib/quiz'
+import { countTags } from '@/lib/quiz'
+import { DEFAULT_CONFIG, modeAvailability, startSession, type PlayConfig, type PlayMode, type Session } from '@/lib/play'
+import { isDue, isWeak } from '@/lib/progress'
+import { unlockSound } from '@/lib/sound'
 import { generateRoomCode, roomUrl, stashLocalRoomQuizzes } from '@/lib/room'
-import { btn, card, chip, input } from '@/lib/ui'
-import TagPicker from '@/components/TagPicker'
+import { btn, card } from '@/lib/ui'
+import QuizFilters, { STUDY_STATUS_LABELS, type StudyStatus } from './QuizFilters'
 import QuizRow from './QuizRow'
-import QuizPlayer from './QuizPlayer'
+import QuizStage from './QuizStage'
+import PlaySetup from './PlaySetup'
 import DensityToggle from './DensityToggle'
 import CreateSetDialog from './CreateSetDialog'
 
-type Tab = 'list' | 'mine' | 'public'
+export type HubTab = 'play' | 'list' | 'mine' | 'public'
 const PAGE = 100
 
 export default function QuizHub({
@@ -24,32 +28,41 @@ export default function QuizHub({
   publicSets,
   initialGenre,
   initialTab,
+  initialMode,
   authorName,
+  progress,
+  nowMs,
 }: {
   quizzes: QuizWithSource[]
   mySets: QuizSet[]
   publicSets: QuizSet[]
   initialGenre: string | null
-  initialTab: Tab
+  initialTab: HubTab
+  initialMode: PlayMode | null
   authorName: string
+  progress: QuizProgress[]
+  nowMs: number
 }) {
   const router = useRouter()
   const density = useDensity()
-  const [tab, setTab] = useState<Tab>(initialTab)
+  const [tab, setTab] = useState<HubTab>(initialTab)
 
   const [genres, setGenres] = useState<string[]>(initialGenre ? [initialGenre] : [])
   const [matchAll, setMatchAll] = useState(false)
   const [levels, setLevels] = useState<number[]>([])
+  const [statuses, setStatuses] = useState<StudyStatus[]>([])
   const [keyword, setKeyword] = useState('')
   const [revealAll, setRevealAll] = useState(false)
   const [shown, setShown] = useState(PAGE)
-  const [playing, setPlaying] = useState(false)
   const [creating, setCreating] = useState(false)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [notice, setNotice] = useState<string | null>(null)
+  const [playConfig, setPlayConfig] = useState<PlayConfig>({ ...DEFAULT_CONFIG, mode: initialMode ?? DEFAULT_CONFIG.mode })
+  const [stage, setStage] = useState<{ pool: Quiz[]; title: string; session?: Session } | null>(null)
 
   const tagCounts = countTags(quizzes)
+  const progressMap = new Map(progress.map(p => [p.memo_id, p]))
 
   const kw = keyword.trim().toLowerCase()
   const filtered = quizzes.filter(q => {
@@ -58,6 +71,11 @@ export default function QuizHub({
       if (!hit) return false
     }
     if (levels.length > 0 && !levels.includes(q.difficulty ?? 0)) return false
+    if (statuses.length > 0) {
+      const p = progressMap.get(q.id)
+      const hit = (statuses.includes('new') && !p) || (statuses.includes('weak') && isWeak(p)) || (statuses.includes('due') && isDue(p, nowMs))
+      if (!hit) return false
+    }
     if (kw && ![q.question, q.answer, q.explanation ?? ''].some(s => s.toLowerCase().includes(kw))) return false
     return true
   })
@@ -65,18 +83,19 @@ export default function QuizHub({
   const conditionLabel = [
     genres.map(g => `#${g}`).join(matchAll ? '×' : '・'),
     levels.length > 0 && levels.map(l => (l === 0 ? '難易度なし' : '★'.repeat(l))).join('/'),
+    statuses.length > 0 && statuses.map(s => STUDY_STATUS_LABELS[s].replace(/^\S+\s/, '')).join('・'),
     kw && `「${keyword.trim()}」`,
   ].filter(Boolean).join(' ') || 'すべてのクイズ'
-
-  function toggle<T>(list: T[], v: T, set: (l: T[]) => void) {
-    set(list.includes(v) ? list.filter(x => x !== v) : [...list, v])
-    setShown(PAGE)
-  }
 
   // 問題を選んでいればその問題、選んでいなければ絞り込み結果が対象
   const usingSelection = selected.size > 0
   const target = usingSelection ? quizzes.filter(q => selected.has(q.id)) : filtered
   const targetLabel = usingSelection ? `選んだ${selected.size}問` : conditionLabel
+
+  function toggleIn<T>(list: T[], v: T, set: (l: T[]) => void) {
+    set(list.includes(v) ? list.filter(x => x !== v) : [...list, v])
+    setShown(PAGE)
+  }
 
   function toggleSelect(id: string) {
     setSelected(prev => {
@@ -87,8 +106,9 @@ export default function QuizHub({
     })
   }
 
-  function selectAllFiltered() {
-    setSelected(prev => new Set([...prev, ...filtered.map(q => q.id)]))
+  function startPlay() {
+    unlockSound()
+    setStage({ pool: target, title: targetLabel, session: startSession(target, playConfig) })
   }
 
   function startLocalRoom() {
@@ -97,64 +117,89 @@ export default function QuizHub({
     router.push(roomUrl(code, { local: true }))
   }
 
-  const hasFilter = genres.length > 0 || levels.length > 0 || !!kw
-  const filteredSelectedCount = filtered.filter(q => selected.has(q.id)).length
+  const filters = (
+    <QuizFilters
+      tagCounts={tagCounts}
+      genres={genres}
+      matchAll={matchAll}
+      levels={levels}
+      onToggleGenre={g => toggleIn(genres, g, setGenres)}
+      onToggleMatchAll={() => setMatchAll(v => !v)}
+      onToggleLevel={l => toggleIn(levels, l, setLevels)}
+      statuses={statuses}
+      onToggleStatus={s => toggleIn(statuses, s, setStatuses)}
+      keyword={tab === 'list' ? keyword : null}
+      onKeyword={v => { setKeyword(v); setShown(PAGE) }}
+      onClear={() => { setGenres([]); setLevels([]); setStatuses([]); setKeyword('') }}
+    />
+  )
+
+  const selectionNote = usingSelection && (
+    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">
+      ☑ 問題一覧で選んだ <b>{selected.size}問</b> が対象です
+      <button onClick={() => setSelected(new Set())} className="text-xs text-indigo-600 hover:underline">選択を解除して条件で選ぶ</button>
+    </div>
+  )
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-gray-900">クイズ</h1>
-          <p className="mt-0.5 text-sm text-gray-500">ジャンルや難易度で選んで遊んだり、セットにしてみんなと共有できます。</p>
+          <h1 className="text-xl font-black text-gray-900">🎯 クイズ</h1>
+          <p className="mt-0.5 text-sm text-gray-500">全{quizzes.length}問 ・ ジャンルと遊び方を選んでスタート！</p>
         </div>
-        <div className="flex w-full rounded-xl bg-gray-100 p-1 text-xs sm:w-auto sm:text-sm">
+        <div className="grid w-full grid-cols-4 rounded-2xl bg-gray-100 p-1 text-xs sm:w-auto sm:text-sm">
           {([
-            ['list', `クイズ一覧 (${quizzes.length})`],
-            ['mine', `マイセット (${mySets.length})`],
-            ['public', 'みんなのセット'],
-          ] as [Tab, string][]).map(([t, l]) => (
+            ['play', '🎮 あそぶ'],
+            ['list', `📋 問題一覧`],
+            ['mine', `📦 マイセット`],
+            ['public', '🌏 みんなの'],
+          ] as [HubTab, string][]).map(([t, l]) => (
             <button key={t} onClick={() => setTab(t)}
-              className={`flex-1 whitespace-nowrap rounded-lg px-2 py-1.5 font-medium transition-colors sm:px-3 ${tab === t ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+              className={`whitespace-nowrap rounded-xl px-2 py-2 font-bold transition-colors sm:px-3 ${tab === t ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
               {l}
             </button>
           ))}
         </div>
       </div>
 
-      {tab === 'list' && (
-        <>
-          <div className={`${card} flex flex-col gap-3 p-4`}>
-            <div className="flex flex-wrap items-start gap-2">
-              <span className="w-14 shrink-0 pt-1 text-xs font-medium text-gray-500">ジャンル</span>
-              <div className="min-w-0 flex-1">
-                <TagPicker tags={tagCounts} selected={genres} onToggle={g => toggle(genres, g, setGenres)} />
-              </div>
-              {genres.length > 1 && (
-                <button onClick={() => setMatchAll(v => !v)} className="text-xs text-indigo-600 hover:underline">
-                  {matchAll ? 'すべて含む' : 'どれかを含む'} ⇄
+      {tab === 'play' && (
+        quizzes.length === 0 ? (
+          <EmptyQuizzes />
+        ) : (
+          <div className="rounded-3xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 p-[3px] shadow-lg">
+            <div className="flex flex-col gap-6 rounded-[21px] bg-white p-4 sm:p-6">
+              <Step n={1} title="はんいを選ぶ" aside={<span className="text-sm text-gray-500"><b className="text-2xl font-black text-indigo-600">{target.length}</b> 問</span>}>
+                {selectionNote || filters}
+              </Step>
+              <Step n={2} title="あそびかたを選ぶ">
+                <PlaySetup pool={target} value={playConfig} onChange={setPlayConfig} />
+              </Step>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button
+                  onClick={startPlay}
+                  disabled={!modeAvailability(playConfig.mode, target).ok}
+                  className="flex-1 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 py-4 text-xl font-black text-white shadow-lg transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:opacity-40"
+                >
+                  ▶ スタート！
                 </button>
-              )}
-            </div>
-            <div className="flex flex-wrap items-start gap-2">
-              <span className="w-14 shrink-0 pt-0.5 text-xs font-medium text-gray-500">難易度</span>
-              <div className="flex flex-1 flex-wrap gap-1.5">
-                {DIFFICULTY_LEVELS.map(l => (
-                  <button key={l} onClick={() => toggle(levels, l, setLevels)} className={chip(levels.includes(l))} title={DIFFICULTY_LABELS[l]}>
-                    {'★'.repeat(l)} <span className="hidden sm:inline">{DIFFICULTY_LABELS[l]}</span>
-                  </button>
-                ))}
-                <button onClick={() => toggle(levels, 0, setLevels)} className={chip(levels.includes(0))}>未設定</button>
+                <button
+                  onClick={startLocalRoom}
+                  disabled={target.length === 0}
+                  className="rounded-2xl bg-gradient-to-r from-rose-500 to-orange-500 px-6 py-4 font-black text-white shadow-lg transition-transform hover:scale-[1.01] disabled:opacity-40"
+                  title="ルームを作って友だちと早押し対決"
+                >
+                  ⚡ みんなで早押し
+                </button>
               </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="w-14 shrink-0 text-xs font-medium text-gray-500">検索</span>
-              <input value={keyword} onChange={e => { setKeyword(e.target.value); setShown(PAGE) }}
-                placeholder="問題・答え・解説から探す" className={`${input} max-w-sm flex-1 py-1.5`} />
-              {hasFilter && (
-                <button onClick={() => { setGenres([]); setLevels([]); setKeyword('') }} className={btn.ghost}>条件をクリア</button>
-              )}
             </div>
           </div>
+        )
+      )}
+
+      {tab === 'list' && (
+        <>
+          <div className={`${card} p-4`}>{filters}</div>
 
           <div className={`${card} flex flex-wrap items-center gap-3 p-3 ${usingSelection ? 'border-amber-300 bg-amber-50/70' : 'border-indigo-200 bg-indigo-50/60'}`}>
             <div className="min-w-0 basis-full sm:basis-0 sm:flex-1">
@@ -173,11 +218,7 @@ export default function QuizHub({
                 </>
               )}
             </div>
-            <button onClick={() => setPlaying(true)} disabled={target.length === 0} className={btn.primary}>▶ ひとりで遊ぶ</button>
-            <button onClick={startLocalRoom} disabled={target.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-rose-600 disabled:opacity-40">
-              ⚡ 早押しで遊ぶ
-            </button>
+            <button onClick={() => setTab('play')} disabled={target.length === 0} className={btn.primary}>🎮 この問題で遊ぶ</button>
             <button onClick={() => setCreating(true)} disabled={target.length === 0} className={btn.secondary}>＋ セットにする</button>
           </div>
 
@@ -197,7 +238,7 @@ export default function QuizHub({
             </button>
             {selecting && (
               <>
-                <button onClick={selectAllFiltered} disabled={filteredSelectedCount === filtered.length} className="text-xs text-indigo-600 hover:underline disabled:text-gray-300 disabled:no-underline">
+                <button onClick={() => setSelected(prev => new Set([...prev, ...filtered.map(q => q.id)]))} className="text-xs text-indigo-600 hover:underline">
                   表示中の{filtered.length}問をすべて選ぶ
                 </button>
                 {selected.size > 0 && (
@@ -215,9 +256,7 @@ export default function QuizHub({
           </div>
 
           {quizzes.length === 0 ? (
-            <div className={`${card} p-10 text-center text-sm text-gray-500`}>
-              まだクイズがありません。<Link href="/dashboard" className="text-indigo-600 hover:underline">本棚</Link>のアイテムを開いて、クイズを追加しましょう。
-            </div>
+            <EmptyQuizzes />
           ) : filtered.length === 0 ? (
             <p className="py-10 text-center text-sm text-gray-400">条件に合うクイズがありません。</p>
           ) : (
@@ -246,7 +285,7 @@ export default function QuizHub({
       {tab === 'mine' && (
         mySets.length === 0 ? (
           <div className={`${card} p-10 text-center text-sm text-gray-500`}>
-            まだセットがありません。「クイズ一覧」で条件を選んで「＋ セットにする」から作れます。
+            まだセットがありません。「📋 問題一覧」で問題を選んで「＋ セットにする」から作れます。
           </div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
@@ -267,7 +306,15 @@ export default function QuizHub({
         )
       )}
 
-      {playing && <QuizPlayer quizzes={target} title={targetLabel} onClose={() => setPlaying(false)} />}
+      {stage && (
+        <QuizStage
+          pool={stage.pool}
+          title={stage.title}
+          initialSession={stage.session}
+          canRecord
+          onClose={() => { setStage(null); router.refresh() }}
+        />
+      )}
       {creating && (
         <CreateSetDialog
           quizIds={target.map(q => q.id)}
@@ -279,6 +326,27 @@ export default function QuizHub({
           onAdded={msg => { setNotice(msg); setSelected(new Set()) }}
         />
       )}
+    </div>
+  )
+}
+
+function Step({ n, title, aside, children }: { n: number; title: string; aside?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-600 text-sm font-black text-white">{n}</span>
+        <h2 className="text-base font-black text-gray-900">{title}</h2>
+        {aside && <div className="ml-auto">{aside}</div>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function EmptyQuizzes() {
+  return (
+    <div className={`${card} p-10 text-center text-sm text-gray-500`}>
+      まだクイズがありません。<Link href="/dashboard" className="text-indigo-600 hover:underline">本棚</Link>のアイテムを開いて、クイズを追加しましょう。
     </div>
   )
 }
@@ -305,13 +373,16 @@ function SetCard({ set, mine = false }: { set: QuizSet; mine?: boolean }) {
   }
 
   return (
-    <div className={`${card} flex flex-col gap-3 p-4`}>
+    <div className={`${card} flex flex-col gap-3 p-4 transition-shadow hover:shadow-md`}>
       <div className="flex items-start justify-between gap-2">
-        <Link href={`/quiz/sets/${set.id}`} className="min-w-0 hover:text-indigo-700">
-          <div className="truncate font-semibold">{set.title}</div>
-          <div className="mt-0.5 text-xs text-gray-500">
-            {set.quiz_count}問{!mine && set.author_name && ` · by ${set.author_name}`}
-          </div>
+        <Link href={`/quiz/sets/${set.id}`} className="flex min-w-0 items-center gap-3 hover:text-indigo-700">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-xl">📦</span>
+          <span className="min-w-0">
+            <span className="block truncate font-bold">{set.title}</span>
+            <span className="block text-xs text-gray-500">
+              {set.quiz_count}問{!mine && set.author_name && ` · by ${set.author_name}`}
+            </span>
+          </span>
         </Link>
         {mine && (
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${set.is_public ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>

@@ -15,7 +15,7 @@ const loadSet = cache(async (setId: string) => {
     fetchAll((from, to) =>
       supabase
         .from('quiz_set_items')
-        .select('position, memos(id, question, answer, explanation, difficulty, tags)', { count: 'exact' })
+        .select('position, memos(id, question, answer, explanation, difficulty, tags, image_url)', { count: 'exact' })
         .eq('quiz_set_id', setId)
         .order('position')
         .order('memo_id')
@@ -56,6 +56,7 @@ export default async function QuizSetPage({ params }: { params: Promise<{ setId:
       }}
       quizzes={data.quizzes}
       isOwner={!!user && user.id === data.set.user_id}
+      loggedIn={!!user}
     />
   )
 }

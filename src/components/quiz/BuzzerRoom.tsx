@@ -8,11 +8,13 @@ import type { Quiz } from '@/types'
 import { shuffle, toQuiz } from '@/lib/quiz'
 import { readLocalRoomQuizzes } from '@/lib/room'
 import { INITIAL_ROOM_STATE, createHostEngine, type HostEngine, type RoomState } from '@/lib/buzzerEngine'
-import { sfx, unlockSound } from '@/lib/sound'
+import { setMuted, sfx, unlockSound, useMuted } from '@/lib/sound'
 import { btn, card, input } from '@/lib/ui'
+import { STAGE_BG } from '@/lib/stage'
 import ProgressiveText from './ProgressiveText'
 import CountPicker from './CountPicker'
 import AnswerSearchLink from './AnswerSearchLink'
+import { QuizImage } from './QuizImage'
 import { DifficultyBadge } from './Difficulty'
 
 type Role = 'host' | 'player'
@@ -81,7 +83,7 @@ async function loadPool(
     fetchAll((from, to) =>
       supabase
         .from('quiz_set_items')
-        .select('position, memos(id, question, answer, explanation, difficulty, tags)', { count: 'exact' })
+        .select('position, memos(id, question, answer, explanation, difficulty, tags, image_url)', { count: 'exact' })
         .eq('quiz_set_id', setId)
         .order('position')
         .order('memo_id')
@@ -98,6 +100,7 @@ async function loadPool(
 
 function Room({ code, setId, local, wantsHost, me }: { code: string; setId: string | null; local: boolean; wantsHost: boolean; me: Me }) {
   const [supabase] = useState(createClient)
+  const muted = useMuted()
   const channelRef = useRef<RealtimeChannel | null>(null)
   const engineRef = useRef<HostEngine | null>(null)
   const membersRef = useRef<Member[]>([])
@@ -125,6 +128,8 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
 
   const apply = useCallback((next: RoomState) => {
     const prev = viewRef.current
+    if (next.phase === 'intro' && (prev.phase !== 'intro' || prev.index !== next.index)) sfx.jingle()
+    if (next.phase === 'finished' && prev.phase !== 'finished') sfx.fanfare()
     if (next.phase === 'reading' && (prev.phase !== 'reading' || prev.readSeq !== next.readSeq)) {
       setReadStart(performance.now())
       setPressed(false)
@@ -294,6 +299,9 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
             <div className="font-mono text-xl font-bold tracking-[0.2em]">{code}</div>
           </div>
           <button onClick={copyInvite} className={btn.secondary}>{copied ? '✓ コピーしました' : '🔗 招待リンクをコピー'}</button>
+          <button onClick={() => setMuted(!muted)} className="rounded-full p-2 text-lg hover:bg-gray-100" title={muted ? '音を出す' : 'ミュート'}>
+            {muted ? '🔇' : '🔊'}
+          </button>
         </div>
 
         {status === 'error' && (
@@ -357,19 +365,29 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
         )}
 
         {/* 出題中 */}
+        {view.phase === 'intro' && (
+          <div className={`flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-3xl ${STAGE_BG} text-white shadow-xl`}>
+            <div key={view.index} className="animate-intro text-6xl font-black drop-shadow-lg">第{view.index + 1}問</div>
+            <div className="text-xs opacity-70">⏱ 押せる {limitLabel(view.buzzWindowMs)} ・ 回答 {limitLabel(view.answerLimitMs)}</div>
+          </div>
+        )}
+
         {(view.phase === 'reading' || view.phase === 'buzzed' || view.phase === 'judged') && (
-          <div className={`${card} overflow-hidden`}>
-            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-2.5">
-              <span className="text-sm font-bold text-gray-700">第{view.index + 1}問 <span className="font-normal text-gray-400">/ {view.total}</span></span>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-gray-400">⏱ 押せる {limitLabel(view.buzzWindowMs)} ・ 回答 {limitLabel(view.answerLimitMs)}</span>
-                <DifficultyBadge level={view.difficulty} />
-              </div>
+          <div className={`flex flex-col gap-3 rounded-3xl ${STAGE_BG} p-3 shadow-xl sm:p-4`}>
+            <div className="flex items-center justify-between gap-2 px-1 text-white">
+              <span className="rounded-full bg-white/15 px-3 py-0.5 text-sm font-black">
+                第{view.index + 1}問 <span className="font-normal opacity-70">/ {view.total}</span>
+              </span>
+              <span className="text-xs opacity-70">⏱ 押せる {limitLabel(view.buzzWindowMs)} ・ 回答 {limitLabel(view.answerLimitMs)}</span>
             </div>
 
-            <div className="min-h-[140px] px-6 py-6">
-              <div className="flex gap-2 text-xl leading-relaxed">
-                <span className="font-bold text-indigo-600">Q.</span>
+            <div key={view.index} className="animate-slide-up rounded-2xl bg-white px-5 py-5 shadow-lg sm:px-6">
+              <div className="mb-2 flex justify-end">
+                <DifficultyBadge level={view.difficulty} showLabel />
+              </div>
+              {view.imageUrl && <QuizImage src={view.imageUrl} className="mx-auto mb-3 max-h-56 rounded-xl object-contain" />}
+              <div className="flex min-h-[3.5rem] gap-2 text-xl leading-relaxed sm:text-2xl">
+                <span className="font-black text-indigo-600">Q.</span>
                 <ProgressiveText
                   key={view.readSeq}
                   text={view.question}
@@ -377,18 +395,18 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
                   startedAt={view.phase === 'reading' ? readStart : null}
                   charMs={view.charMs}
                   stopped={view.phase === 'reading' ? null : view.paused ?? view.readFrom}
-                  className="flex-1 font-medium"
+                  className="flex-1 font-bold"
                 />
               </div>
             </div>
 
             {view.phase === 'reading' && view.result && !view.result.correct && (
-              <div className="mx-5 mb-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              <div className="animate-shake rounded-xl bg-rose-500 px-3 py-2 text-sm font-bold text-white">
                 ✗ {view.result.name}さん 不正解{view.result.answerText && `（${view.result.answerText}）`} — 続きから再開！
               </div>
             )}
 
-            <div className="flex flex-col gap-3 border-t border-gray-100 p-4">
+            <div className="flex flex-col gap-3 rounded-2xl bg-white p-4 shadow-lg">
               {view.phase === 'reading' && view.buzzWindowMs !== null && (
                 <TimeBar
                   key={view.readSeq}
@@ -483,9 +501,9 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
             </div>
 
             {isHost && view.phase !== 'judged' && (
-              <div className="flex justify-end gap-2 border-t border-gray-100 bg-gray-50 px-4 py-2">
-                <button onClick={() => engineRef.current?.skip()} className={btn.ghost}>この問題をスキップ</button>
-                <button onClick={() => engineRef.current?.finish()} className={btn.ghost}>終了して結果発表</button>
+              <div className="flex justify-end gap-2 px-1">
+                <button onClick={() => engineRef.current?.skip()} className="rounded-md px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white">この問題をスキップ</button>
+                <button onClick={() => engineRef.current?.finish()} className="rounded-md px-2 py-1 text-xs text-white/70 hover:bg-white/10 hover:text-white">終了して結果発表</button>
               </div>
             )}
           </div>

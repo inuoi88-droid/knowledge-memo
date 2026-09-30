@@ -1,8 +1,9 @@
 import { createClient, getUser } from '@/lib/supabase/server'
-import { fetchAll } from '@/lib/supabase/fetchAll'
-import { uniqueTags } from '@/lib/quiz'
-import QuizHub from '@/components/quiz/QuizHub'
-import type { QuizSet, QuizWithSource } from '@/types'
+import { fetchMyProgress, fetchMyQuizzes } from '@/lib/supabase/queries'
+import { getNow } from '@/lib/stage'
+import QuizHub, { type HubTab } from '@/components/quiz/QuizHub'
+import { MODES } from '@/lib/play'
+import type { QuizSet } from '@/types'
 
 type SetRow = Omit<QuizSet, 'quiz_count'> & { quiz_set_items: { count: number }[] }
 
@@ -14,23 +15,15 @@ function toSet(row: SetRow): QuizSet {
 export default async function QuizPage({
   searchParams,
 }: {
-  searchParams: Promise<{ genre?: string; tab?: string }>
+  searchParams: Promise<{ genre?: string; tab?: string; play?: string }>
 }) {
-  const { genre, tab } = await searchParams
+  const { genre, tab, play } = await searchParams
   const supabase = await createClient()
   const user = (await getUser())!
 
-  const [memos, { data: mySets }, { data: publicSets }] = await Promise.all([
-    fetchAll((from, to) =>
-      supabase
-        .from('memos')
-        .select('id, question, answer, explanation, difficulty, tags, item_id, items(title, shelf_id)', { count: 'exact' })
-        .eq('user_id', user.id)
-        .eq('type', 'qa')
-        .order('created_at', { ascending: false })
-        .order('id')
-        .range(from, to),
-    ),
+  const [quizzes, progress, { data: mySets }, { data: publicSets }] = await Promise.all([
+    fetchMyQuizzes(supabase, user.id),
+    fetchMyProgress(supabase, user.id),
     supabase
       .from('quiz_sets')
       .select('*, quiz_set_items(count)')
@@ -45,24 +38,10 @@ export default async function QuizPage({
       .limit(60),
   ])
 
-  const quizzes: QuizWithSource[] = memos.map(m => {
-    const item = m.items as unknown as { title: string; shelf_id: string } | null
-    return {
-      id: m.id,
-      question: m.question ?? '',
-      answer: m.answer ?? '',
-      explanation: m.explanation ?? null,
-      difficulty: m.difficulty ?? null,
-      tags: uniqueTags(m.tags),
-      item_id: m.item_id,
-      item_title: item?.title ?? null,
-      shelf_id: item?.shelf_id ?? null,
-    }
-  })
-
   const meta = user.user_metadata ?? {}
   const authorName: string = meta.full_name || meta.name || user.email?.split('@')[0] || '名無し'
-  const initialTab = tab === 'mine' || tab === 'public' ? tab : 'list'
+  const initialTab: HubTab = tab === 'list' || tab === 'mine' || tab === 'public' ? tab : 'play'
+  const initialMode = MODES.find(m => m.id === play)?.id ?? null
 
   return (
     <QuizHub
@@ -71,7 +50,10 @@ export default async function QuizPage({
       publicSets={((publicSets ?? []) as SetRow[]).map(toSet)}
       initialGenre={genre ?? null}
       initialTab={initialTab}
+      initialMode={initialMode}
       authorName={authorName}
+      progress={progress}
+      nowMs={getNow()}
     />
   )
 }

@@ -12,13 +12,18 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="bg-white border border-gray-200 rounded-xl p-10 w-full max-w-sm text-center shadow-sm">
-        <div className="text-4xl mb-4">📚</div>
-        <h1 className="text-xl font-bold mb-2">知識メモ</h1>
-        <p className="text-sm text-gray-500 mb-8">
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(ellipse_at_top,#4338ca_0%,#1e1b4b_55%,#0c0a24_100%)] p-4">
+      <div className="w-full max-w-sm rounded-3xl bg-white p-8 text-center shadow-2xl sm:p-10">
+        <div className="mb-3 text-5xl">📚🎯</div>
+        <h1 className="mb-2 text-2xl font-black">知識メモ</h1>
+        <p className="mb-5 text-sm text-gray-500">
           本・YouTube・Webから得た知識を<br />整理して、クイズで楽しむアプリ
         </p>
+        <div className="mb-7 flex flex-wrap justify-center gap-1.5 text-xs font-bold">
+          {['🔢 四択', '⭕ ○×', '⚡ 早押し', '🖼️ ビジュアル', '👥 みんなで対戦'].map(t => (
+            <span key={t} className="rounded-full bg-indigo-50 px-2.5 py-1 text-indigo-700">{t}</span>
+          ))}
+        </div>
         <button
           onClick={signInWithGoogle}
           className="w-full flex items-center justify-center gap-3 px-4 py-2.5 border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"

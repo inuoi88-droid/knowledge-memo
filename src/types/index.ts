@@ -33,6 +33,7 @@ export interface Memo {
   explanation: string | null
   difficulty: number | null
   tags: string[]
+  image_url: string | null
   created_at: string
 }
 
@@ -43,12 +44,35 @@ export interface Quiz {
   explanation: string | null
   difficulty: number | null
   tags: string[]
+  image_url: string | null
 }
 
 export interface QuizWithSource extends Quiz {
   item_id: string
   item_title: string | null
   shelf_id: string | null
+}
+
+export interface QuizProgress {
+  memo_id: string
+  correct_count: number
+  wrong_count: number
+  level: number
+  last_result: boolean | null
+  last_answered_at: string | null
+  due_at: string | null
+}
+
+export interface PlaySessionRecord {
+  id: number
+  title: string
+  mode: string
+  rule: string
+  total: number
+  correct: number
+  max_combo: number
+  duration_ms: number
+  created_at: string
 }
 
 export interface QuizSet {

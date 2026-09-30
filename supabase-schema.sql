@@ -124,3 +124,106 @@ create policy "Quizzes in public sets are readable" on public.memos for select t
       where i.memo_id = memos.id and s.is_public
     )
   );
+
+-- ▼ ビジュアルクイズ・タグ重複防止・成績の記録・勉強モード
+-- （本番DBには migration「quiz_progress_play_sessions_image_url_tag_dedupe」として適用済み）
+
+-- ビジュアルクイズ（外部の画像URLを保存するだけ。画像そのものは保存しない）
+alter table public.memos add column if not exists image_url text
+  check (image_url is null or image_url ~* '^https?://');
+
+-- タグの重複をDB側で防ぐ（同じタグは1つにまとめる。順番は最初の出現順）
+create or replace function private.dedupe_memo_tags() returns trigger
+  language plpgsql set search_path = '' as $fn$
+begin
+  if new.tags is not null then
+    new.tags := coalesce((
+      select array_agg(t order by ord)
+      from (select t, min(ord) as ord from unnest(new.tags) with ordinality as u(t, ord) group by t) s
+    ), '{}');
+  end if;
+  return new;
+end $fn$;
+drop trigger if exists dedupe_memo_tags on public.memos;
+create trigger dedupe_memo_tags before insert or update of tags on public.memos
+  for each row execute function private.dedupe_memo_tags();
+
+-- 問題ごとの成績（1人×1問につき1行を上書きするので、遊ぶほど増えることはない）
+create table if not exists public.quiz_progress (
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  memo_id uuid not null references public.memos on delete cascade,
+  correct_count int not null default 0,
+  wrong_count int not null default 0,
+  level smallint not null default 0,          -- 覚えた度 0〜5
+  last_result boolean,
+  last_answered_at timestamptz,
+  due_at timestamptz,                         -- 次に復習する日時
+  primary key (user_id, memo_id)
+);
+create index if not exists quiz_progress_memo_id_idx on public.quiz_progress (memo_id);
+create index if not exists quiz_progress_due_idx on public.quiz_progress (user_id, due_at);
+alter table public.quiz_progress enable row level security;
+create policy "Own quiz progress" on public.quiz_progress for all to authenticated
+  using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+
+-- 1回答ぶんを記録。復習の時期が来ていない問題は、正解しても覚えた度を上げない（同じ日に連打して上げられないように）
+create or replace function public.record_answer(p_memo_id uuid, p_correct boolean) returns void
+  language plpgsql security invoker set search_path = '' as $fn$
+declare
+  gaps constant interval[] := array['10 minutes', '1 day', '3 days', '7 days', '14 days', '30 days']::interval[];
+begin
+  insert into public.quiz_progress as p (user_id, memo_id, correct_count, wrong_count, level, last_result, last_answered_at, due_at)
+  values (
+    (select auth.uid()), p_memo_id,
+    case when p_correct then 1 else 0 end,
+    case when p_correct then 0 else 1 end,
+    case when p_correct then 1 else 0 end,
+    p_correct, now(),
+    now() + gaps[case when p_correct then 2 else 1 end]
+  )
+  on conflict (user_id, memo_id) do update set
+    correct_count = p.correct_count + case when p_correct then 1 else 0 end,
+    wrong_count = p.wrong_count + case when p_correct then 0 else 1 end,
+    level = case
+      when not p_correct then 0
+      when p.due_at is null or p.due_at <= now() then least(5, p.level + 1)
+      else p.level end,
+    due_at = case
+      when not p_correct then now() + gaps[1]
+      when p.due_at is null or p.due_at <= now() then now() + gaps[least(5, p.level + 1) + 1]
+      else p.due_at end,
+    last_result = p_correct,
+    last_answered_at = now();
+end $fn$;
+revoke all on function public.record_answer(uuid, boolean) from public, anon;
+grant execute on function public.record_answer(uuid, boolean) to authenticated;
+
+-- 1回ごとのプレイ記録（1人あたり最新300件だけ残す）
+create table if not exists public.play_sessions (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  title text not null,
+  mode text not null,
+  rule text not null,
+  total int not null,
+  correct int not null,
+  max_combo int not null default 0,
+  duration_ms int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists play_sessions_user_created_idx on public.play_sessions (user_id, created_at desc);
+alter table public.play_sessions enable row level security;
+create policy "Own play sessions" on public.play_sessions for all to authenticated
+  using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+
+create or replace function private.prune_play_sessions() returns trigger
+  language plpgsql security definer set search_path = '' as $fn$
+begin
+  delete from public.play_sessions
+  where user_id = new.user_id
+    and id not in (select id from public.play_sessions where user_id = new.user_id order by created_at desc, id desc limit 300);
+  return null;
+end $fn$;
+drop trigger if exists prune_play_sessions on public.play_sessions;
+create trigger prune_play_sessions after insert on public.play_sessions
+  for each row execute function private.prune_play_sessions();

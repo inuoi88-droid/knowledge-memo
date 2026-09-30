@@ -6,8 +6,9 @@ import type { User } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
 
 const TABS = [
-  { href: '/dashboard', label: '本棚', icon: '📚', isActive: (p: string) => !p.startsWith('/dashboard/quiz') },
+  { href: '/dashboard', label: '本棚', icon: '📚', isActive: (p: string) => !p.startsWith('/dashboard/quiz') && !p.startsWith('/dashboard/study') },
   { href: '/dashboard/quiz', label: 'クイズ', icon: '🎯', isActive: (p: string) => p.startsWith('/dashboard/quiz') },
+  { href: '/dashboard/study', label: '勉強', icon: '📖', isActive: (p: string) => p.startsWith('/dashboard/study') },
 ]
 
 export default function TopBar({ user }: { user: User }) {

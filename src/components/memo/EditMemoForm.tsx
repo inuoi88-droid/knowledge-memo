@@ -4,9 +4,10 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Memo } from '@/types'
-import { parseTags } from '@/lib/quiz'
+import { isImageUrl, parseTags } from '@/lib/quiz'
 import { btn, input, label } from '@/lib/ui'
 import { DifficultyPicker } from '@/components/quiz/Difficulty'
+import ImageUrlField from './ImageUrlField'
 
 export default function EditMemoForm({ memo, onDone }: { memo: Memo; onDone: () => void }) {
   const router = useRouter()
@@ -15,6 +16,7 @@ export default function EditMemoForm({ memo, onDone }: { memo: Memo; onDone: () 
   const [answer, setAnswer] = useState(memo.answer ?? '')
   const [explanation, setExplanation] = useState(memo.explanation ?? '')
   const [difficulty, setDifficulty] = useState<number | null>(memo.difficulty ?? null)
+  const [imageUrl, setImageUrl] = useState(memo.image_url ?? '')
   const [tagInput, setTagInput] = useState((memo.tags ?? []).join(' '))
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -27,7 +29,15 @@ export default function EditMemoForm({ memo, onDone }: { memo: Memo; onDone: () 
     let updates: Record<string, unknown>
     if (isQuiz) {
       if (!question.trim() || !answer.trim()) { setError('問題と答えの両方を入力してください。'); return }
-      updates = { question: question.trim(), answer: answer.trim(), explanation: explanation.trim() || null, difficulty, tags }
+      if (imageUrl.trim() && !isImageUrl(imageUrl)) { setError('画像URLが正しくありません。'); return }
+      updates = {
+        question: question.trim(),
+        answer: answer.trim(),
+        explanation: explanation.trim() || null,
+        difficulty,
+        tags,
+        image_url: imageUrl.trim() || null,
+      }
     } else {
       if (!text.trim()) { setError('内容を入力してください。'); return }
       updates = { text: text.trim(), tags }
@@ -67,6 +77,7 @@ export default function EditMemoForm({ memo, onDone }: { memo: Memo; onDone: () 
             <span className={label}>難易度</span>
             <DifficultyPicker value={difficulty} onChange={setDifficulty} />
           </div>
+          <ImageUrlField value={imageUrl} onChange={setImageUrl} />
         </>
       ) : (
         <textarea autoFocus value={text} onChange={e => setText(e.target.value)} rows={3} className={`${input} resize-none`} />

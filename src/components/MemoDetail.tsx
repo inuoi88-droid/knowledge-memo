@@ -11,7 +11,7 @@ import TagPicker from '@/components/TagPicker'
 import AddMemoForm, { TYPE_LABELS } from '@/components/memo/AddMemoForm'
 import EditMemoForm from '@/components/memo/EditMemoForm'
 import QuizRow from '@/components/quiz/QuizRow'
-import QuizPlayer from '@/components/quiz/QuizPlayer'
+import QuizStage from '@/components/quiz/QuizStage'
 import DensityToggle from '@/components/quiz/DensityToggle'
 
 const NOTE_STYLE: Record<Exclude<MemoType, 'qa'>, { bar: string; badge: string }> = {
@@ -183,8 +183,9 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
       )}
 
       {playing && (
-        <QuizPlayer
-          quizzes={playing}
+        <QuizStage
+          canRecord
+          pool={playing}
           title={[item.title, playGenre && `#${playGenre}`, playDifficulty && '★'.repeat(Number(playDifficulty))].filter(Boolean).join(' ')}
           onClose={() => setPlaying(null)}
         />

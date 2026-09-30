@@ -4,10 +4,11 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { MemoType } from '@/types'
-import { parseTags } from '@/lib/quiz'
+import { isImageUrl, parseTags } from '@/lib/quiz'
 import { btn, input, label } from '@/lib/ui'
 import { DifficultyPicker } from '@/components/quiz/Difficulty'
 import BulkQuizImport from './BulkQuizImport'
+import ImageUrlField from './ImageUrlField'
 
 export const TYPE_LABELS: Record<MemoType, string> = {
   quote: '引用',
@@ -31,6 +32,7 @@ export default function AddMemoForm({ itemId }: { itemId: string }) {
   const [answer, setAnswer] = useState('')
   const [explanation, setExplanation] = useState('')
   const [difficulty, setDifficulty] = useState<number | null>(null)
+  const [imageUrl, setImageUrl] = useState('')
   const [tagInput, setTagInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -41,6 +43,7 @@ export default function AddMemoForm({ itemId }: { itemId: string }) {
     let row: Record<string, unknown>
     if (tab === 'qa') {
       if (!question.trim() || !answer.trim()) { setError('問題と答えの両方を入力してください。'); return }
+      if (imageUrl.trim() && !isImageUrl(imageUrl)) { setError('画像URLが正しくありません。'); return }
       row = {
         type: 'qa',
         question: question.trim(),
@@ -48,6 +51,7 @@ export default function AddMemoForm({ itemId }: { itemId: string }) {
         explanation: explanation.trim() || null,
         difficulty,
         tags,
+        image_url: imageUrl.trim() || null,
       }
     } else {
       if (!text.trim()) { setError('内容を入力してください。'); return }
@@ -62,7 +66,7 @@ export default function AddMemoForm({ itemId }: { itemId: string }) {
     setBusy(false)
     if (insertError) { setError(`追加できませんでした: ${insertError.message}`); return }
 
-    setText(''); setQuestion(''); setAnswer(''); setExplanation('')
+    setText(''); setQuestion(''); setAnswer(''); setExplanation(''); setImageUrl('')
     // 同じジャンル・難易度で続けて追加しやすいよう、タグと難易度は残す
     router.refresh()
   }
@@ -120,6 +124,7 @@ export default function AddMemoForm({ itemId }: { itemId: string }) {
                 <span className={label}>難易度</span>
                 <DifficultyPicker value={difficulty} onChange={setDifficulty} />
               </div>
+              <ImageUrlField value={imageUrl} onChange={setImageUrl} />
             </>
           ) : (
             <textarea value={text} onChange={e => setText(e.target.value)} onKeyDown={onCtrlEnter}

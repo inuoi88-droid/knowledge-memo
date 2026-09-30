@@ -6,6 +6,7 @@ import type { Quiz } from '@/types'
 import type { Density } from '@/lib/density'
 import { DifficultyBadge } from './Difficulty'
 import AnswerSearchLink from './AnswerSearchLink'
+import { QuizImage } from './QuizImage'
 
 const SIZES: Record<Density, { row: string; text: string; answer: string }> = {
   compact: { row: 'px-3 py-1.5', text: 'text-sm', answer: 'text-sm' },
@@ -66,6 +67,14 @@ export default function QuizRow({
           className="mt-1.5 h-4 w-4 shrink-0 cursor-pointer accent-indigo-600"
           aria-label="この問題を選ぶ"
         />
+      )}
+      {quiz.image_url && (
+        <a href={quiz.image_url} target="_blank" rel="noopener noreferrer" className="shrink-0" title="画像を開く">
+          <QuizImage
+            src={quiz.image_url}
+            className={`rounded-lg border border-gray-200 object-cover ${compact ? 'h-8 w-11' : density === 'large' ? 'h-20 w-28' : 'h-12 w-16'}`}
+          />
+        </a>
       )}
       <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 leading-relaxed">

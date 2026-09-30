@@ -1,6 +1,7 @@
 import { createClient, getUser } from '@/lib/supabase/server'
 import { fetchAll } from '@/lib/supabase/fetchAll'
 import { countTags } from '@/lib/quiz'
+import { getNow } from '@/lib/stage'
 import ShelfGrid from '@/components/ShelfGrid'
 import TagCloud from '@/components/TagCloud'
 
@@ -8,7 +9,7 @@ export default async function DashboardPage() {
   const supabase = await createClient()
   const user = await getUser()
 
-  const [{ data: shelves }, memos] = await Promise.all([
+  const [{ data: shelves }, memos, { count: dueCount }] = await Promise.all([
     supabase
       .from('shelves')
       .select('*, items(id, memos(id))')
@@ -23,6 +24,11 @@ export default async function DashboardPage() {
         .order('id')
         .range(from, to),
     ),
+    supabase
+      .from('quiz_progress')
+      .select('memo_id', { count: 'exact', head: true })
+      .eq('user_id', user!.id)
+      .lte('due_at', new Date(getNow()).toISOString()),
   ])
 
   const genres = countTags(memos)
@@ -36,7 +42,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <TagCloud genres={genres} quizCount={memos.length} />
+      <TagCloud genres={genres} quizCount={memos.length} dueCount={dueCount ?? 0} />
       <ShelfGrid shelves={shelvesWithCount} />
     </div>
   )

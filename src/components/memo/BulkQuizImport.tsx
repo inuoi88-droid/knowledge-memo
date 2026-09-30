@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { BULK_DEFAULT_ORDER, BULK_FIELD_LABELS, BULK_TEMPLATE, parseBulkQuiz } from '@/lib/quiz'
 import { btn, input } from '@/lib/ui'
 import { DifficultyBadge } from '@/components/quiz/Difficulty'
+import { QuizImage } from '@/components/quiz/QuizImage'
 
 export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onDone: () => void }) {
   const router = useRouter()
@@ -40,6 +41,7 @@ export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onD
         explanation: r.explanation,
         difficulty: r.difficulty,
         tags: r.tags,
+        image_url: r.image_url,
       })),
     )
     setBusy(false)
@@ -71,7 +73,7 @@ export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onD
           ))}
         </div>
         <p className="mt-1.5 text-gray-500">
-          問題・答え以外は空欄でOK。1行目に「問題」「答え」などの見出しがあれば、列の順番は自由です。難易度は 1〜5 / ★の数 / かんたん・ふつう・むずかしい で書けます。
+          問題・答え以外は空欄でOK。1行目に「問題」「答え」などの見出しがあれば、列の順番は自由です。難易度は 1〜5 / ★の数 / かんたん・ふつう・むずかしい で書けます。画像は https:// で始まる画像のURLを入れるとビジュアルクイズになります。
         </p>
         <button type="button" onClick={copyTemplate} className="mt-2 text-indigo-600 underline-offset-2 hover:underline">
           📋 見出し行をコピー
@@ -96,6 +98,7 @@ export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onD
                 <th className="px-2 py-1.5 text-left font-medium">ジャンル</th>
                 <th className="px-2 py-1.5 text-left font-medium">難易度</th>
                 <th className="px-2 py-1.5 text-left font-medium">解説</th>
+                <th className="px-2 py-1.5 text-left font-medium">画像</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -106,6 +109,7 @@ export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onD
                   <td className="px-2 py-1.5 text-indigo-600">{r.tags.map(t => `#${t}`).join(' ')}</td>
                   <td className="px-2 py-1.5"><DifficultyBadge level={r.difficulty} /></td>
                   <td className="max-w-40 truncate px-2 py-1.5 text-gray-500">{r.explanation}</td>
+                  <td className="px-2 py-1.5">{r.image_url && <QuizImage src={r.image_url} className="h-8 w-12 rounded object-cover" />}</td>
                 </tr>
               ))}
             </tbody>

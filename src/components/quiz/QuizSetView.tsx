@@ -9,7 +9,7 @@ import { DIFFICULTY_LEVELS, countTags } from '@/lib/quiz'
 import { generateRoomCode, roomUrl } from '@/lib/room'
 import { btn, card } from '@/lib/ui'
 import QuizRow from './QuizRow'
-import QuizPlayer from './QuizPlayer'
+import QuizStage from './QuizStage'
 import DensityToggle from './DensityToggle'
 import { DifficultyBadge } from './Difficulty'
 
@@ -17,10 +17,12 @@ export default function QuizSetView({
   set,
   quizzes,
   isOwner,
+  loggedIn,
 }: {
   set: { id: string; title: string; description: string | null; authorName: string | null; isPublic: boolean }
   quizzes: Quiz[]
   isOwner: boolean
+  loggedIn: boolean
 }) {
   const router = useRouter()
   const density = useDensity()
@@ -128,7 +130,7 @@ export default function QuizSetView({
         </div>
       )}
 
-      {playing && <QuizPlayer quizzes={quizzes} title={set.title} onClose={() => setPlaying(false)} />}
+      {playing && <QuizStage pool={quizzes} title={set.title} canRecord={loggedIn} onClose={() => setPlaying(false)} />}
     </div>
   )
 }

@@ -41,7 +41,9 @@ export function parseTags(raw: string): string[] {
   )
 }
 
-export function toQuiz(m: Pick<Memo, 'id' | 'question' | 'answer' | 'explanation' | 'difficulty' | 'tags'>): Quiz {
+export function toQuiz(
+  m: Pick<Memo, 'id' | 'question' | 'answer' | 'explanation' | 'difficulty' | 'tags'> & { image_url?: string | null },
+): Quiz {
   return {
     id: m.id,
     question: m.question ?? '',
@@ -49,7 +51,12 @@ export function toQuiz(m: Pick<Memo, 'id' | 'question' | 'answer' | 'explanation
     explanation: m.explanation ?? null,
     difficulty: m.difficulty ?? null,
     tags: uniqueTags(m.tags),
+    image_url: m.image_url ?? null,
   }
+}
+
+export function isImageUrl(raw: string | null | undefined): boolean {
+  return !!raw && /^https?:\/\/\S+$/i.test(raw.trim())
 }
 
 export interface TagCount {
@@ -74,10 +81,10 @@ export function shuffle<T>(arr: readonly T[]): T[] {
 
 // ---- スプレッドシート貼り付け ----
 
-export type BulkField = 'question' | 'answer' | 'genre' | 'difficulty' | 'explanation'
+export type BulkField = 'question' | 'answer' | 'genre' | 'difficulty' | 'explanation' | 'image'
 
 // 見出し行が無いときの列の並び。旧形式（問題・答え・タグ）の貼り付けもそのまま読める順にしている
-export const BULK_DEFAULT_ORDER: BulkField[] = ['question', 'answer', 'genre', 'difficulty', 'explanation']
+export const BULK_DEFAULT_ORDER: BulkField[] = ['question', 'answer', 'genre', 'difficulty', 'explanation', 'image']
 
 export const BULK_FIELD_LABELS: Record<BulkField, string> = {
   question: '問題',
@@ -85,6 +92,7 @@ export const BULK_FIELD_LABELS: Record<BulkField, string> = {
   genre: 'ジャンル',
   difficulty: '難易度',
   explanation: '解説',
+  image: '画像',
 }
 
 export const BULK_TEMPLATE = BULK_DEFAULT_ORDER.map(f => BULK_FIELD_LABELS[f]).join('\t')
@@ -95,6 +103,7 @@ const HEADER_ALIASES: Record<BulkField, string[]> = {
   genre: ['ジャンル', 'タグ', 'カテゴリ', 'カテゴリー', 'genre', 'tag', 'tags', 'category'],
   difficulty: ['難易度', 'レベル', '難しさ', 'difficulty', 'level'],
   explanation: ['解説', '説明', '補足', 'explanation', 'note'],
+  image: ['画像', '画像url', '写真', 'image', 'image_url', 'img'],
 }
 
 function headerField(cell: string): BulkField | null {
@@ -111,6 +120,7 @@ export interface BulkQuizRow {
   explanation: string | null
   difficulty: number | null
   tags: string[]
+  image_url: string | null
 }
 
 export function parseBulkQuiz(text: string): { rows: BulkQuizRow[]; order: BulkField[]; hasHeader: boolean } {
@@ -145,6 +155,7 @@ export function parseBulkQuiz(text: string): { rows: BulkQuizRow[]; order: BulkF
       explanation: get('explanation') || null,
       difficulty: parseDifficulty(get('difficulty')),
       tags: parseTags(get('genre')),
+      image_url: isImageUrl(get('image')) ? get('image') : null,
     })
   }
   return { rows, order: order.filter((f): f is BulkField => f !== null), hasHeader }
@@ -185,4 +196,33 @@ export function isCorrectAnswer(input: string, answer: string): boolean {
   const n = normalizeAnswer(input)
   if (!n) return false
   return acceptableAnswers(answer).includes(n)
+}
+
+// ---- 四択・○× の選択肢づくり ----
+
+const answerKey = (a: string) => normalizeAnswer(a.normalize('NFKC').split(/[/|]/)[0].replace(/\(.*?\)/g, ''))
+
+export function distinctAnswerCount(pool: readonly Quiz[]): number {
+  return new Set(pool.map(q => answerKey(q.answer))).size
+}
+
+// 同じジャンル・似た長さの答えを優先して「それっぽい」ハズレを選ぶ
+export function pickDistractors(q: Quiz, pool: readonly Quiz[], n: number): string[] {
+  const own = answerKey(q.answer)
+  const seen = new Set<string>([own])
+  const candidates: { answer: string; score: number }[] = []
+  for (const other of pool) {
+    const key = answerKey(other.answer)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    const shared = other.tags.filter(t => q.tags.includes(t)).length
+    const lenGap = Math.abs(other.answer.length - q.answer.length)
+    candidates.push({ answer: other.answer, score: shared * 10 - lenGap + Math.random() * 4 })
+  }
+  candidates.sort((a, b) => b.score - a.score)
+  return shuffle(candidates.slice(0, Math.max(n * 3, 8)).map(c => c.answer)).slice(0, n)
+}
+
+export function buildChoices(q: Quiz, pool: readonly Quiz[]): string[] {
+  return shuffle([q.answer, ...pickDistractors(q, pool, 3)])
 }
