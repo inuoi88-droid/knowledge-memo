@@ -45,9 +45,10 @@ export const MASTERY: Record<Mastery, { label: string; color: string; text: stri
 
 export const MASTERY_ORDER: Mastery[] = ['mastered', 'almost', 'learning', 'new']
 
-export function masteryOf(p: QuizProgress | undefined): Mastery {
+// 復習の段階が「最後から2つめ」まで進んだら覚えた（既定の5段階なら4回目以降）
+export function masteryOf(p: QuizProgress | undefined, steps = DEFAULT_STUDY_SETTINGS.reviewDays.length): Mastery {
   if (!p) return 'new'
-  if (p.level >= 4) return 'mastered'
+  if (p.level >= Math.max(1, steps - 1)) return 'mastered'
   if (p.level >= 2) return 'almost'
   return 'learning'
 }
@@ -61,8 +62,59 @@ export function isWeak(p: QuizProgress | undefined): boolean {
   return !!p && p.wrong_count > 0 && (p.last_result === false || p.wrong_count >= p.correct_count)
 }
 
-export function countMastery(ids: readonly string[], progress: ReadonlyMap<string, QuizProgress>): Record<Mastery, number> {
+export function countMastery(ids: readonly string[], progress: ReadonlyMap<string, QuizProgress>, steps?: number): Record<Mastery, number> {
   const out: Record<Mastery, number> = { new: 0, learning: 0, almost: 0, mastered: 0 }
-  for (const id of ids) out[masteryOf(progress.get(id))]++
+  for (const id of ids) out[masteryOf(progress.get(id), steps)]++
   return out
+}
+
+// ---- 勉強モードの設定 ----
+
+export interface StudySettings {
+  reviewDays: number[]
+  checkRepeats: number
+  reviewStyle: 'typing' | 'cards'
+}
+
+export const DEFAULT_STUDY_SETTINGS: StudySettings = {
+  reviewDays: [1, 3, 7, 14, 30],
+  checkRepeats: 2,
+  reviewStyle: 'typing',
+}
+
+export const REVIEW_PRESETS: { name: string; desc: string; days: number[] }[] = [
+  { name: '標準', desc: 'はじめはこれ', days: [1, 3, 7, 14, 30] },
+  { name: 'こまめに', desc: '忘れやすい人・試験前に', days: [1, 2, 4, 7, 14, 30] },
+  { name: '間隔広め', desc: '覚えるのが早い人に', days: [2, 7, 21, 60] },
+]
+
+export const MAX_REVIEW_STEPS = 8
+
+export function toStudySettings(row: { review_days: number[]; check_repeats: number; review_style: string } | null): StudySettings {
+  if (!row) return DEFAULT_STUDY_SETTINGS
+  return {
+    reviewDays: row.review_days,
+    checkRepeats: row.check_repeats,
+    reviewStyle: row.review_style === 'cards' ? 'cards' : 'typing',
+  }
+}
+
+export async function saveStudySettings(s: StudySettings): Promise<string | null> {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return 'ログインが必要です'
+  const { error } = await supabase.from('study_settings').upsert({
+    user_id: user.id,
+    review_days: s.reviewDays,
+    check_repeats: s.checkRepeats,
+    review_style: s.reviewStyle,
+    updated_at: new Date().toISOString(),
+  })
+  return error?.message ?? null
+}
+
+export function formatDays(d: number): string {
+  if (d % 30 === 0) return `${d / 30}か月`
+  if (d % 7 === 0) return `${d / 7}週間`
+  return `${d}日`
 }

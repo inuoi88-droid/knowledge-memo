@@ -166,12 +166,31 @@ alter table public.quiz_progress enable row level security;
 create policy "Own quiz progress" on public.quiz_progress for all to authenticated
   using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 
--- 1回答ぶんを記録。復習の時期が来ていない問題は、正解しても覚えた度を上げない（同じ日に連打して上げられないように）
+-- 勉強モードの個人設定（復習の間隔・確かめるで書く回数・復習の答え方）
+-- （本番DBには migration「study_settings_configurable_review」として適用済み）
+create table if not exists public.study_settings (
+  user_id uuid primary key default auth.uid() references auth.users on delete cascade,
+  review_days int[] not null default '{1,3,7,14,30}'
+    check (cardinality(review_days) between 2 and 8 and 1 <= all (review_days) and 3650 >= all (review_days)),
+  check_repeats smallint not null default 2 check (check_repeats between 1 and 5),
+  review_style text not null default 'typing' check (review_style in ('typing', 'cards')),
+  updated_at timestamptz not null default now()
+);
+alter table public.study_settings enable row level security;
+create policy "Own study settings" on public.study_settings for all to authenticated
+  using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+
+-- 1回答ぶんを記録。復習の間隔は本人の設定（なければ 1,3,7,14,30 日）。
+-- 復習の時期が来ていない問題は、正解しても覚えた度を上げない（同じ日に連打して上げられないように）
 create or replace function public.record_answer(p_memo_id uuid, p_correct boolean) returns void
   language plpgsql security invoker set search_path = '' as $fn$
 declare
-  gaps constant interval[] := array['10 minutes', '1 day', '3 days', '7 days', '14 days', '30 days']::interval[];
+  days int[];
+  steps int;
 begin
+  select s.review_days into days from public.study_settings s where s.user_id = (select auth.uid());
+  days := coalesce(days, '{1,3,7,14,30}'::int[]);
+  steps := cardinality(days);
   insert into public.quiz_progress as p (user_id, memo_id, correct_count, wrong_count, level, last_result, last_answered_at, due_at)
   values (
     (select auth.uid()), p_memo_id,
@@ -179,18 +198,18 @@ begin
     case when p_correct then 0 else 1 end,
     case when p_correct then 1 else 0 end,
     p_correct, now(),
-    now() + gaps[case when p_correct then 2 else 1 end]
+    case when p_correct then now() + make_interval(days => days[1]) else now() + interval '10 minutes' end
   )
   on conflict (user_id, memo_id) do update set
     correct_count = p.correct_count + case when p_correct then 1 else 0 end,
     wrong_count = p.wrong_count + case when p_correct then 0 else 1 end,
     level = case
       when not p_correct then 0
-      when p.due_at is null or p.due_at <= now() then least(5, p.level + 1)
+      when p.due_at is null or p.due_at <= now() then least(steps, p.level + 1)
       else p.level end,
     due_at = case
-      when not p_correct then now() + gaps[1]
-      when p.due_at is null or p.due_at <= now() then now() + gaps[least(5, p.level + 1) + 1]
+      when not p_correct then now() + interval '10 minutes'
+      when p.due_at is null or p.due_at <= now() then now() + make_interval(days => days[least(steps, p.level + 1)])
       else p.due_at end,
     last_result = p_correct,
     last_answered_at = now();

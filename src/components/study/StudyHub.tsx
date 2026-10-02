@@ -6,13 +6,14 @@ import { useRouter } from 'next/navigation'
 import type { PlaySessionRecord, Quiz, QuizProgress } from '@/types'
 import { countTags, shuffle } from '@/lib/quiz'
 import { MODES, RULES } from '@/lib/play'
-import { MASTERY, MASTERY_ORDER, countMastery, isDue, masteryOf, type Mastery } from '@/lib/progress'
+import { MASTERY, MASTERY_ORDER, countMastery, formatDays, isDue, masteryOf, type Mastery, type StudySettings } from '@/lib/progress'
 import { unlockSound } from '@/lib/sound'
 import { card } from '@/lib/ui'
 import { perfNow } from '@/lib/stage'
 import QuizFilters from '@/components/quiz/QuizFilters'
 import CountPicker from '@/components/quiz/CountPicker'
 import StudySession, { STUDY_KINDS, buildStudyQueue, type StudyItem, type StudyKind } from './StudySession'
+import StudySettingsDialog from './StudySettingsDialog'
 
 const REVIEW_CAP = 100
 
@@ -41,13 +42,17 @@ export default function StudyHub({
   progress,
   sessions,
   nowMs,
+  settings,
 }: {
   quizzes: Quiz[]
   progress: QuizProgress[]
   sessions: PlaySessionRecord[]
   nowMs: number
+  settings: StudySettings
 }) {
   const router = useRouter()
+  const [editingSettings, setEditingSettings] = useState(false)
+  const steps = settings.reviewDays.length
   const [genres, setGenres] = useState<string[]>([])
   const [matchAll, setMatchAll] = useState(false)
   const [levels, setLevels] = useState<number[]>([])
@@ -57,7 +62,7 @@ export default function StudyHub({
 
   const progressMap = new Map(progress.map(p => [p.memo_id, p]))
   const allIds = quizzes.map(q => q.id)
-  const overall = countMastery(allIds, progressMap)
+  const overall = countMastery(allIds, progressMap, steps)
   const due = quizzes
     .filter(q => isDue(progressMap.get(q.id), nowMs))
     .sort((a, b) => Date.parse(progressMap.get(a.id)!.due_at!) - Date.parse(progressMap.get(b.id)!.due_at!))
@@ -69,9 +74,9 @@ export default function StudyHub({
     }
     return levels.length === 0 || levels.includes(q.difficulty ?? 0)
   })
-  const targetCounts = countMastery(target.map(q => q.id), progressMap)
-  const learnPool = target.filter(q => { const m = masteryOf(progressMap.get(q.id)); return m === 'new' || m === 'learning' })
-  const checkPool = target.filter(q => masteryOf(progressMap.get(q.id)) !== 'mastered')
+  const targetCounts = countMastery(target.map(q => q.id), progressMap, steps)
+  const learnPool = target.filter(q => { const m = masteryOf(progressMap.get(q.id), steps); return m === 'new' || m === 'learning' })
+  const checkPool = target.filter(q => masteryOf(progressMap.get(q.id), steps) !== 'mastered')
   const rangeLabel = [
     genres.map(g => `#${g}`).join(matchAll ? '×' : '・'),
     levels.length > 0 && levels.map(l => (l === 0 ? '難易度なし' : '★'.repeat(l))).join('/'),
@@ -79,7 +84,7 @@ export default function StudyHub({
 
   const genreStats = countTags(quizzes).slice(0, 12).map(g => {
     const ids = quizzes.filter(q => q.tags.includes(g.name)).map(q => q.id)
-    return { ...g, counts: countMastery(ids, progressMap) }
+    return { ...g, counts: countMastery(ids, progressMap, steps) }
   })
 
   function start(kind: StudyKind) {
@@ -98,7 +103,7 @@ export default function StudyHub({
       picked = shuffle(checkPool).slice(0, checkCount)
     }
     if (picked.length === 0) return
-    setSession({ kind, title, queue: buildStudyQueue(kind, picked, quizzes), startedAt: perfNow() })
+    setSession({ kind, title, queue: buildStudyQueue(kind, picked, settings), startedAt: perfNow() })
   }
 
   function toggleIn<T>(list: T[], v: T, set: (l: T[]) => void) {
@@ -115,9 +120,18 @@ export default function StudyHub({
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-xl font-black text-gray-900">📖 勉強</h1>
-        <p className="mt-0.5 text-sm text-gray-500">覚える → 確かめる → 忘れた頃に復習、の3ステップで確実に身につけよう。</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-black text-gray-900">📖 勉強</h1>
+          <p className="mt-0.5 text-sm text-gray-500">覚える → 確かめる → 忘れた頃に復習、の3ステップで確実に身につけよう。</p>
+        </div>
+        <button
+          onClick={() => setEditingSettings(true)}
+          className="rounded-xl border-2 border-gray-100 bg-white px-3 py-2 text-left text-xs text-gray-600 transition-colors hover:border-indigo-200"
+        >
+          <span className="font-bold text-gray-900">⚙️ 学習の設定</span>
+          <span className="ml-2">書く回数 {settings.checkRepeats}回 ・ 間隔 {settings.reviewDays.map(formatDays).join('→')}</span>
+        </button>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-3">
@@ -150,7 +164,9 @@ export default function StudyHub({
               </div>
             ))}
           </div>
-          <p className="text-[11px] text-gray-400">覚えた度は、忘れた頃に正解するたびに上がります（同じ日に何度正解しても1段階だけ）。まちがえると最初からになります。</p>
+          <p className="text-[11px] text-gray-400">
+            覚えた度は、復習の時期に正解するたびに1段階上がり（同じ日に何度正解しても1段階だけ）、{Math.max(1, steps - 1)}段階目で「覚えた」になります。まちがえると最初からです。
+          </p>
         </div>
       </div>
 
@@ -185,7 +201,10 @@ export default function StudyHub({
                     <div className="text-xs text-gray-500">{STUDY_KINDS[kind].desc}</div>
                   </div>
                 </div>
-                <div className="text-xs text-gray-500">{poolLabel}：<b className="text-gray-900">{pool.length}問</b></div>
+                <div className="text-xs text-gray-500">
+                  {poolLabel}：<b className="text-gray-900">{pool.length}問</b>
+                  {kind === 'check' && <>（1問につき <b className="text-gray-900">{settings.checkRepeats}回</b> 正しく書けたら合格）</>}
+                </div>
                 {pool.length > 0 && <CountPicker max={pool.length} value={Math.min(count, pool.length)} onChange={setCount} presets={[5, 10, 20, 50]} />}
                 <button
                   onClick={() => start(kind)}
@@ -197,7 +216,10 @@ export default function StudyHub({
               </div>
             ))}
           </div>
-          <p className="text-xs text-gray-500">STEP 3「定着」は、上の <b>🔁 今日の復習</b> です。覚えた問題が1日後・3日後・1週間後…と間隔をあけて出てきます。</p>
+          <p className="text-xs text-gray-500">
+            STEP 3「定着」は、上の <b>🔁 今日の復習</b> です。正解した問題が {settings.reviewDays.map(formatDays).join(' → ')} 後…と間隔をあけて出てきます（
+            <button onClick={() => setEditingSettings(true)} className="text-indigo-600 hover:underline">間隔を変える</button>）。
+          </p>
         </div>
       </section>
 
@@ -256,9 +278,16 @@ export default function StudyHub({
           kind={session.kind}
           title={session.title}
           initialQueue={session.queue}
-          pool={quizzes}
+          settings={settings}
           startedAt={session.startedAt}
           onClose={() => { setSession(null); router.refresh() }}
+        />
+      )}
+      {editingSettings && (
+        <StudySettingsDialog
+          value={settings}
+          onClose={() => setEditingSettings(false)}
+          onSaved={() => { setEditingSettings(false); router.refresh() }}
         />
       )}
     </div>

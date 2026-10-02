@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Quiz } from '@/types'
-import { buildChoices, isCorrectAnswer } from '@/lib/quiz'
-import { recordAnswer, recordSession } from '@/lib/progress'
+import { isCorrectAnswer } from '@/lib/quiz'
+import { recordAnswer, recordSession, type StudySettings } from '@/lib/progress'
 import { setMuted, sfx, useMuted } from '@/lib/sound'
-import { CHOICE_LABELS, CHOICE_STYLES, STAGE_BG } from '@/lib/stage'
+import { STAGE_BG } from '@/lib/stage'
 import { DifficultyBadge } from '@/components/quiz/Difficulty'
 import AnswerSearchLink from '@/components/quiz/AnswerSearchLink'
 import { QuizImage } from '@/components/quiz/QuizImage'
@@ -14,26 +14,25 @@ export type StudyKind = 'learn' | 'check' | 'review'
 
 export const STUDY_KINDS: Record<StudyKind, { icon: string; name: string; desc: string }> = {
   learn: { icon: '📖', name: '覚える', desc: 'カードをめくって答えと解説を覚える' },
-  check: { icon: '🧪', name: '確かめる', desc: '四択で正解したら、次は入力でテスト' },
+  check: { icon: '✍️', name: '確かめる', desc: '答えを何度も書いて、正しく書けるか確かめる' },
   review: { icon: '🔁', name: '復習', desc: '忘れかけた頃の問題を思い出す' },
 }
 
 export interface StudyItem {
   quiz: Quiz
-  stage: 'card' | 'choice' | 'typing'
-  choices: string[] | null
+  stage: 'card' | 'typing'
+  // 合格までにあと何回正しく書くか
+  remaining: number
   tries: number
 }
 
-// 同じ問題は3回までくり返し出す（それでもダメなら「もう少し」として次回へ）
+// 同じ問題は3巡までくり返し出す（それでもダメなら「もう少し」として次回へ）
 const MAX_TRIES = 3
 
-export function buildStudyQueue(kind: StudyKind, quizzes: readonly Quiz[], pool: readonly Quiz[]): StudyItem[] {
-  return quizzes.map(quiz =>
-    kind === 'check'
-      ? { quiz, stage: 'choice' as const, choices: buildChoices(quiz, pool), tries: 0 }
-      : { quiz, stage: 'card' as const, choices: null, tries: 0 },
-  )
+export function buildStudyQueue(kind: StudyKind, quizzes: readonly Quiz[], settings: StudySettings): StudyItem[] {
+  const typing = kind === 'check' || (kind === 'review' && settings.reviewStyle === 'typing')
+  const repeats = kind === 'check' ? settings.checkRepeats : 1
+  return quizzes.map(quiz => ({ quiz, stage: typing ? 'typing' : 'card', remaining: repeats, tries: 0 }))
 }
 
 type Outcome = 'correct' | 'wrong'
@@ -42,14 +41,14 @@ export default function StudySession({
   kind,
   title,
   initialQueue,
-  pool,
+  settings,
   startedAt,
   onClose,
 }: {
   kind: StudyKind
   title: string
   initialQueue: StudyItem[]
-  pool: Quiz[]
+  settings: StudySettings
   startedAt: number
   onClose: () => void
 }) {
@@ -58,7 +57,7 @@ export default function StudySession({
   const [total, setTotal] = useState(initialQueue.length)
   const [phase, setPhase] = useState<'asking' | 'revealed'>('asking')
   const [outcome, setOutcome] = useState<Outcome | null>(null)
-  const [picked, setPicked] = useState<string | null>(null)
+  const [given, setGiven] = useState<string | null>(null)
   const [typed, setTyped] = useState('')
   const [cleared, setCleared] = useState(0)
   const [givenUp, setGivenUp] = useState(0)
@@ -66,6 +65,7 @@ export default function StudySession({
   const [finishedAt, setFinishedAt] = useState<number | null>(null)
   const [runStart, setRunStart] = useState(startedAt)
 
+  // 入力の回答は「次へ」で確定して保存する（「実は合ってた」を反映するため）
   const pendingRef = useRef<{ memoId: string; correct: boolean } | null>(null)
   const flushPending = useCallback(() => {
     const p = pendingRef.current
@@ -77,50 +77,60 @@ export default function StudySession({
   const item = queue[0]
   const done = finishedAt !== null
   const info = STUDY_KINDS[kind]
+  const repeats = kind === 'check' ? settings.checkRepeats : 1
 
-  function answer(result: Outcome, pick?: string) {
-    if (!item || phase !== 'asking') return
+  function finishIfEmpty(nextQueue: StudyItem[]) {
+    if (nextQueue.length > 0) return
+    setFinishedAt(performance.now())
+    sfx.fanfare()
+  }
+
+  function submitTyped() {
+    if (!item || phase !== 'asking' || !typed.trim()) return
+    const result: Outcome = isCorrectAnswer(typed, item.quiz.answer) ? 'correct' : 'wrong'
     flushPending()
     pendingRef.current = { memoId: item.quiz.id, correct: result === 'correct' }
     setAttempts(a => ({ correct: a.correct + (result === 'correct' ? 1 : 0), total: a.total + 1 }))
     setOutcome(result)
-    setPicked(pick ?? null)
+    setGiven(typed.trim())
     setPhase('revealed')
     if (result === 'correct') sfx.correct()
     else sfx.wrong()
   }
 
-  function advance() {
+  function overrideCorrect() {
+    if (outcome !== 'wrong') return
+    if (pendingRef.current) pendingRef.current = { ...pendingRef.current, correct: true }
+    setAttempts(a => ({ ...a, correct: a.correct + 1 }))
+    setOutcome('correct')
+    sfx.correct()
+  }
+
+  // 入力：正解なら残り回数を減らして後ろへ、まちがいなら回数を戻してやり直し
+  function advanceTyping() {
     if (!item || !outcome) return
     flushPending()
     const [cur, ...rest] = queue
     let nextQueue = rest
     if (outcome === 'correct') {
-      if (cur.stage === 'choice') nextQueue = [...rest, { ...cur, stage: 'typing', choices: null }]
+      if (cur.remaining > 1) nextQueue = [...rest, { ...cur, remaining: cur.remaining - 1 }]
       else setCleared(c => c + 1)
     } else if (cur.tries + 1 < MAX_TRIES) {
-      const retry: StudyItem = cur.stage === 'card'
-        ? { ...cur, tries: cur.tries + 1 }
-        : { ...cur, stage: 'choice', choices: buildChoices(cur.quiz, pool), tries: cur.tries + 1 }
-      nextQueue = [...rest, retry]
+      nextQueue = [...rest, { ...cur, remaining: repeats, tries: cur.tries + 1 }]
     } else {
       setGivenUp(g => g + 1)
     }
     setQueue(nextQueue)
     setPhase('asking')
     setOutcome(null)
-    setPicked(null)
+    setGiven(null)
     setTyped('')
-    if (nextQueue.length === 0) {
-      setFinishedAt(performance.now())
-      sfx.fanfare()
-    }
+    finishIfEmpty(nextQueue)
   }
 
-  // カードは「覚えた／まだ」を押したらそのまま次へ
+  // カード：「覚えた／まだ」を押したらそのまま次へ
   function gradeCard(result: Outcome) {
-    if (!item || item.stage !== 'card' || phase !== 'revealed' || outcome) return
-    flushPending()
+    if (!item || item.stage !== 'card' || phase !== 'revealed') return
     recordAnswer(item.quiz.id, result === 'correct')
     setAttempts(a => ({ correct: a.correct + (result === 'correct' ? 1 : 0), total: a.total + 1 }))
     const [cur, ...rest] = queue
@@ -132,28 +142,17 @@ export default function StudySession({
     setPhase('asking')
     if (result === 'correct') sfx.correct()
     else sfx.tap()
-    if (nextQueue.length === 0) {
-      setFinishedAt(performance.now())
-      sfx.fanfare()
-    }
-  }
-
-  function overrideCorrect() {
-    if (outcome !== 'wrong') return
-    if (pendingRef.current) pendingRef.current = { ...pendingRef.current, correct: true }
-    setAttempts(a => ({ ...a, correct: a.correct + 1 }))
-    setOutcome('correct')
-    sfx.correct()
+    finishIfEmpty(nextQueue)
   }
 
   function restart() {
     const quizzes = [...new Map(initialQueue.map(i => [i.quiz.id, i.quiz])).values()]
-    const q = buildStudyQueue(kind, quizzes, pool)
+    const q = buildStudyQueue(kind, quizzes, settings)
     setQueue(q)
     setTotal(q.length)
     setPhase('asking')
     setOutcome(null)
-    setPicked(null)
+    setGiven(null)
     setTyped('')
     setCleared(0)
     setGivenUp(0)
@@ -190,14 +189,9 @@ export default function StudySession({
           if (e.key === 'ArrowRight' || e.key === 'l') gradeCard('correct')
           if (e.key === 'ArrowLeft' || e.key === 'j') gradeCard('wrong')
         }
-        return
-      }
-      if (phase === 'asking' && item.stage === 'choice' && item.choices && /^[1-4]$/.test(e.key)) {
-        const c = item.choices[Number(e.key) - 1]
-        if (c !== undefined) answer(c === item.quiz.answer ? 'correct' : 'wrong', c)
       } else if (phase === 'revealed' && (e.key === 'Enter' || e.key === ' ')) {
         e.preventDefault()
-        advance()
+        advanceTyping()
       }
     }
   })
@@ -209,6 +203,7 @@ export default function StudySession({
 
   const quiz = item?.quiz
   const progressDone = cleared + givenUp
+  const timesDone = item ? repeats - item.remaining : 0
 
   return (
     <div className={`fixed inset-0 z-50 flex flex-col overflow-y-auto ${STAGE_BG} text-white`}>
@@ -221,7 +216,7 @@ export default function StudySession({
           {!done && (
             <div className="flex items-center gap-2 text-sm font-bold tabular-nums">
               <span className="rounded-full bg-emerald-500/80 px-2.5 py-0.5">✓ {cleared}</span>
-              <span className="rounded-full bg-white/15 px-2.5 py-0.5">残り {queue.length}</span>
+              <span className="rounded-full bg-white/15 px-2.5 py-0.5">残り {total - progressDone}問</span>
             </div>
           )}
           <button onClick={() => setMuted(!muted)} className="rounded-full p-2 text-lg hover:bg-white/10" title={muted ? '音を出す' : 'ミュート'}>
@@ -239,12 +234,22 @@ export default function StudySession({
       <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 px-4 py-5">
         {!done && item && quiz && (
           <>
-            <div key={`${quiz.id}-${item.stage}-${item.tries}`} className="animate-slide-up rounded-3xl bg-white p-5 text-gray-900 shadow-2xl sm:p-7">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <span className="rounded-full bg-indigo-600 px-3 py-0.5 text-xs font-black text-white">
-                  {item.stage === 'card' ? '📖 カード' : item.stage === 'choice' ? '🔢 四択' : '⌨️ 入力'}
-                  {item.tries > 0 && ' ・ もう一度'}
-                </span>
+            <div key={`${quiz.id}-${item.remaining}-${item.tries}`} className="animate-slide-up rounded-3xl bg-white p-5 text-gray-900 shadow-2xl sm:p-7">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-indigo-600 px-3 py-0.5 text-xs font-black text-white">
+                    {item.stage === 'card' ? '📖 カード' : '✍️ 書いて答える'}
+                    {item.tries > 0 && ' ・ やり直し'}
+                  </span>
+                  {item.stage === 'typing' && repeats > 1 && (
+                    <span className="flex items-center gap-1" title={`${repeats}回正しく書けたら合格`}>
+                      {Array.from({ length: repeats }, (_, i) => (
+                        <span key={i} className={`h-2.5 w-2.5 rounded-full ${i < timesDone ? 'bg-emerald-500' : 'bg-gray-200'}`} />
+                      ))}
+                      <span className="ml-1 text-xs text-gray-500">あと{item.remaining}回</span>
+                    </span>
+                  )}
+                </div>
                 <DifficultyBadge level={quiz.difficulty} showLabel />
               </div>
               {quiz.image_url && <QuizImage src={quiz.image_url} className="mx-auto mb-4 max-h-60 rounded-xl object-contain" />}
@@ -257,29 +262,14 @@ export default function StudySession({
               </button>
             )}
 
-            {item.stage === 'choice' && phase === 'asking' && item.choices && (
-              <div className="grid gap-2 sm:grid-cols-2">
-                {item.choices.map((c, i) => (
-                  <button
-                    key={c}
-                    onClick={() => answer(c === quiz.answer ? 'correct' : 'wrong', c)}
-                    className={`${CHOICE_STYLES[i]} flex items-center gap-3 rounded-2xl px-4 py-4 text-left text-lg font-bold shadow-lg transition-transform hover:scale-[1.02] active:scale-[0.98]`}
-                  >
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/25 text-sm font-black">{CHOICE_LABELS[i]}</span>
-                    <span className="min-w-0 break-words">{c}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-
             {item.stage === 'typing' && phase === 'asking' && (
-              <form onSubmit={e => { e.preventDefault(); if (typed.trim()) answer(isCorrectAnswer(typed, quiz.answer) ? 'correct' : 'wrong', typed.trim()) }} className="flex gap-2">
+              <form onSubmit={e => { e.preventDefault(); submitTyped() }} className="flex gap-2">
                 <input
                   autoFocus
                   value={typed}
                   onChange={e => setTyped(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && e.nativeEvent.isComposing) e.preventDefault() }}
-                  placeholder="四択で正解！今度は答えを入力"
+                  placeholder="答えを書いて Enter"
                   className="min-w-0 flex-1 rounded-2xl bg-white px-4 py-4 text-lg font-bold text-gray-900 shadow-lg outline-none ring-indigo-400 focus:ring-4"
                 />
                 <button type="submit" disabled={!typed.trim()} className="rounded-2xl bg-emerald-500 px-5 font-black shadow-lg disabled:opacity-40">回答</button>
@@ -291,9 +281,9 @@ export default function StudySession({
                 {outcome && (
                   <div className={`mb-2 text-lg font-black ${outcome === 'correct' ? 'text-emerald-600' : 'text-rose-600'}`}>
                     {outcome === 'correct'
-                      ? item.stage === 'choice' ? '⭕ 正解！ あとで入力でも確かめます' : '⭕ 正解！ クリア'
+                      ? item.remaining > 1 ? `⭕ 正解！ あと${item.remaining - 1}回書いて合格` : '⭕ 正解！ 合格'
                       : '✗ ざんねん… あとでもう一度'}
-                    {outcome === 'wrong' && picked && <span className="ml-2 text-sm font-medium text-gray-500">あなたの答え: {picked}</span>}
+                    {outcome === 'wrong' && given && <span className="ml-2 text-sm font-medium text-gray-500">あなたの答え: {given}</span>}
                   </div>
                 )}
                 <div className="flex flex-wrap items-baseline gap-2">
@@ -325,14 +315,14 @@ export default function StudySession({
               </div>
             )}
 
-            {phase === 'revealed' && item.stage !== 'card' && (
+            {phase === 'revealed' && item.stage === 'typing' && (
               <div className="flex gap-2">
-                {item.stage === 'typing' && outcome === 'wrong' && (
+                {outcome === 'wrong' && (
                   <button onClick={overrideCorrect} className="rounded-2xl bg-white/15 px-4 py-4 text-sm font-bold ring-1 ring-white/30 hover:bg-white/25">
                     実は合ってた
                   </button>
                 )}
-                <button onClick={advance} className="flex-1 rounded-2xl bg-white py-4 text-lg font-black text-indigo-900 shadow-lg active:scale-[0.98]">
+                <button onClick={advanceTyping} className="flex-1 rounded-2xl bg-white py-4 text-lg font-black text-indigo-900 shadow-lg active:scale-[0.98]">
                   次へ → <span className="text-xs font-normal text-gray-400">Enter</span>
                 </button>
               </div>
@@ -347,7 +337,7 @@ export default function StudySession({
             <div className="grid grid-cols-3 gap-2">
               <div className="rounded-2xl bg-emerald-50 p-3">
                 <div className="text-3xl font-black text-emerald-600">{cleared}</div>
-                <div className="text-xs text-gray-500">{kind === 'check' ? 'クリア' : '覚えた'}</div>
+                <div className="text-xs text-gray-500">{kind === 'learn' ? '覚えた' : '合格'}</div>
               </div>
               <div className="rounded-2xl bg-amber-50 p-3">
                 <div className="text-3xl font-black text-amber-600">{givenUp}</div>
@@ -359,7 +349,7 @@ export default function StudySession({
               </div>
             </div>
             <p className="text-sm text-gray-500">
-              記録しました。覚えた問題は、忘れかけた頃に「🔁 今日の復習」に出てきます。
+              記録しました。正解した問題は、設定した間隔（{settings.reviewDays.join('・')}日後…）で「🔁 今日の復習」に出てきます。
             </p>
             <div className="grid grid-cols-2 gap-2">
               <button onClick={restart} className="rounded-2xl border-2 border-indigo-100 py-3 font-bold text-indigo-700 hover:bg-indigo-50">もう一度</button>

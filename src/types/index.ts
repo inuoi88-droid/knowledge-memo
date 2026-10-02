@@ -63,6 +63,12 @@ export interface QuizProgress {
   due_at: string | null
 }
 
+export interface StudySettingsRow {
+  review_days: number[]
+  check_repeats: number
+  review_style: string
+}
+
 export interface PlaySessionRecord {
   id: number
   title: string
