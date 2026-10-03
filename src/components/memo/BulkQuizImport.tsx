@@ -8,13 +8,29 @@ import { btn, input } from '@/lib/ui'
 import { DifficultyBadge } from '@/components/quiz/Difficulty'
 import { QuizImage } from '@/components/quiz/QuizImage'
 
-export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onDone: () => void }) {
+export interface ExistingQuiz { id: string; question: string | null; answer: string | null }
+
+const quizKey = (q: string | null, a: string | null) => `${(q ?? '').normalize('NFKC').trim()}\u0000${(a ?? '').normalize('NFKC').trim()}`
+
+export default function BulkQuizImport({ itemId, existing, onDone }: { itemId: string; existing: ExistingQuiz[]; onDone: () => void }) {
   const router = useRouter()
   const [text, setText] = useState('')
   const [status, setStatus] = useState<{ kind: 'error' | 'info'; msg: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [reorder, setReorder] = useState(true)
 
   const { rows, order, hasHeader } = parseBulkQuiz(text)
+
+  // 問題文と答えが同じものは、すでにある問題とみなして追加しない
+  const pool = new Map<string, string[]>()
+  for (const e of existing) {
+    const k = quizKey(e.question, e.answer)
+    pool.set(k, [...(pool.get(k) ?? []), e.id])
+  }
+  const matched = rows.map(r => pool.get(quizKey(r.question, r.answer))?.shift() ?? null)
+  const newRows = rows.filter((_, i) => matched[i] === null)
+  const dupCount = rows.length - newRows.length
+  const willReorder = reorder && dupCount > 0
 
   async function copyTemplate() {
     try {
@@ -26,29 +42,46 @@ export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onD
   }
 
   async function importRows() {
-    if (rows.length === 0) return
+    if (newRows.length === 0 && !willReorder) return
     setBusy(true)
     const supabase = createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { setBusy(false); return }
-    const { error } = await supabase.from('memos').insert(
-      rows.map(r => ({
-        item_id: itemId,
-        user_id: user.id,
-        type: 'qa' as const,
-        question: r.question,
-        answer: r.answer,
-        explanation: r.explanation,
-        difficulty: r.difficulty,
-        tags: r.tags,
-        image_url: r.image_url,
-      })),
-    )
-    setBusy(false)
-    if (error) {
-      setStatus({ kind: 'error', msg: `追加できませんでした: ${error.message}` })
-      return
+    let newIds: string[] = []
+    if (newRows.length > 0) {
+      const { data, error } = await supabase.from('memos').insert(
+        newRows.map(r => ({
+          item_id: itemId,
+          user_id: user.id,
+          type: 'qa' as const,
+          question: r.question,
+          answer: r.answer,
+          explanation: r.explanation,
+          difficulty: r.difficulty,
+          tags: r.tags,
+          image_url: r.image_url,
+        })),
+      ).select('id')
+      if (error) {
+        setBusy(false)
+        setStatus({ kind: 'error', msg: `追加できませんでした: ${error.message}` })
+        return
+      }
+      newIds = (data ?? []).map(d => d.id)
     }
+    if (willReorder) {
+      // 貼り付けた表の上からの順に、すでにある問題も新しい問題も並べ直す
+      let n = 0
+      const ids = matched.map(id => id ?? newIds[n++]).filter((id): id is string => !!id)
+      const { error } = await supabase.rpc('reorder_quizzes', { p_ids: ids })
+      if (error) {
+        setBusy(false)
+        setStatus({ kind: 'error', msg: `並び順をそろえられませんでした: ${error.message}` })
+        router.refresh()
+        return
+      }
+    }
+    setBusy(false)
     setText('')
     setStatus(null)
     onDone()
@@ -121,9 +154,23 @@ export default function BulkQuizImport({ itemId, onDone }: { itemId: string; onD
         </div>
       )}
 
+      {dupCount > 0 && (
+        <div className="flex flex-col gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <span>このアイテムにすでにある問題（問題文と答えが同じ）が <b>{dupCount}問</b> あります。これらは追加しません。</span>
+          <label className="inline-flex cursor-pointer items-center gap-1.5">
+            <input type="checkbox" checked={reorder} onChange={e => setReorder(e.target.checked)} className="accent-indigo-600" />
+            並び順もこの表の上からの順にそろえる（成績はそのまま。「初めから学習」の順番になります）
+          </label>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={importRows} disabled={rows.length === 0 || busy} className={btn.primary}>
-          {busy ? '追加中…' : `${rows.length}問を追加`}
+        <button onClick={importRows} disabled={(newRows.length === 0 && !willReorder) || busy} className={btn.primary}>
+          {busy
+            ? '保存中…'
+            : newRows.length > 0
+              ? `${newRows.length}問を追加${willReorder ? '・並び順をそろえる' : ''}`
+              : willReorder ? `並び順をそろえる（${dupCount}問）` : rows.length > 0 ? '追加する問題がありません' : '0問を追加'}
         </button>
         {status && (
           <span className={`text-xs ${status.kind === 'error' ? 'text-red-500' : 'text-emerald-600'}`}>{status.msg}</span>

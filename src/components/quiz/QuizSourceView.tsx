@@ -1,70 +1,70 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
-import type { Quiz } from '@/types'
 import { useDensity } from '@/lib/density'
 import { DIFFICULTY_LEVELS, countTags } from '@/lib/quiz'
 import { generateRoomCode, roomUrl } from '@/lib/room'
-import { btn, card } from '@/lib/ui'
+import type { SourcePageData } from '@/lib/supabase/sourcePage'
+import { btn, card, chip } from '@/lib/ui'
+import PublishButton from '@/components/PublishButton'
 import QuizRow from './QuizRow'
 import QuizStage from './QuizStage'
 import DensityToggle from './DensityToggle'
 import { DifficultyBadge } from './Difficulty'
 
-export default function QuizSetView({
-  set,
-  quizzes,
+export default function QuizSourceView({
+  data,
   isOwner,
   loggedIn,
+  defaultAuthor,
 }: {
-  set: { id: string; title: string; description: string | null; authorName: string | null; isPublic: boolean }
-  quizzes: Quiz[]
+  data: SourcePageData
   isOwner: boolean
   loggedIn: boolean
+  defaultAuthor: string
 }) {
   const router = useRouter()
   const density = useDensity()
+  const [itemId, setItemId] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
-  const [showList, setShowList] = useState(isOwner)
-  const [copied, setCopied] = useState(false)
+  const [showList, setShowList] = useState(false)
 
+  const quizzes = itemId ? data.quizzes.filter(q => q.item_id === itemId) : data.quizzes
+  const itemTitle = data.items.find(i => i.id === itemId)?.title
+  const playTitle = itemTitle ? `${data.title}：${itemTitle}` : data.title
   const allGenres = countTags(quizzes)
   const genres = allGenres.slice(0, 10).map(g => g.name)
   const moreGenres = allGenres.length - genres.length
   const levelCounts = DIFFICULTY_LEVELS.map(l => ({ l, n: quizzes.filter(q => q.difficulty === l).length })).filter(x => x.n > 0)
-
-  async function copyLink() {
-    await navigator.clipboard.writeText(`${location.origin}/quiz/sets/${set.id}`)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
-  async function togglePublic() {
-    await createClient().from('quiz_sets').update({ is_public: !set.isPublic }).eq('id', set.id)
-    router.refresh()
-  }
-
-  async function removeFromSet(memoId: string) {
-    await createClient().from('quiz_set_items').delete().eq('quiz_set_id', set.id).eq('memo_id', memoId)
-    router.refresh()
-  }
+  const roomSource = itemId ? { kind: 'item' as const, id: itemId } : data.source
 
   return (
     <div className="flex flex-col gap-5">
       <div className={`${card} overflow-hidden`}>
         <div className="bg-gradient-to-br from-indigo-600 to-violet-600 px-6 py-8 text-white">
-          <div className="text-xs font-medium uppercase tracking-wider opacity-80">クイズセット</div>
-          <h1 className="mt-1 text-2xl font-bold">{set.title}</h1>
+          <div className="text-xs font-medium tracking-wider opacity-80">{data.source.kind === 'shelf' ? '📚 本棚' : '📕 アイテム'}のクイズ</div>
+          <h1 className="mt-1 text-2xl font-bold">{data.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm opacity-90">
-            <span>{quizzes.length}問</span>
-            {set.authorName && <span>作成: {set.authorName}</span>}
-            {isOwner && <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">{set.isPublic ? '公開中' : '非公開'}</span>}
+            <span>{data.quizzes.length}問</span>
+            {data.subtitle && <span>{data.subtitle}</span>}
+            {data.authorName && data.isPublic && <span>公開: {data.authorName}</span>}
+            {isOwner && <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">{data.isPublic ? '公開中' : '非公開（あなただけ見られます）'}</span>}
           </div>
-          {set.description && <p className="mt-3 whitespace-pre-wrap text-sm opacity-90">{set.description}</p>}
         </div>
         <div className="flex flex-col gap-4 p-5">
+          {data.items.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-xs font-medium text-gray-500">アイテム</span>
+              <button onClick={() => setItemId(null)} className={chip(itemId === null)}>すべて <span className="opacity-70">{data.quizzes.length}</span></button>
+              {data.items.map(i => (
+                <button key={i.id} onClick={() => setItemId(i.id)} className={chip(itemId === i.id)}>
+                  {i.title} <span className="opacity-70">{i.count}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {(genres.length > 0 || levelCounts.length > 0) && (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-500">
               {genres.length > 0 && (
@@ -81,10 +81,10 @@ export default function QuizSetView({
 
           <div className="grid gap-2 sm:grid-cols-2">
             <button onClick={() => setPlaying(true)} disabled={quizzes.length === 0} className={`${btn.primary} py-3 text-base`}>
-              ▶ ひとりで遊ぶ
+              ▶ ひとりで遊ぶ（{quizzes.length}問）
             </button>
             <button
-              onClick={() => router.push(roomUrl(generateRoomCode(), { setId: set.id }))}
+              onClick={() => router.push(roomUrl(generateRoomCode(), { source: roomSource }))}
               disabled={quizzes.length === 0}
               className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-rose-500 py-3 text-base font-medium text-white shadow-sm transition-colors hover:bg-rose-600 disabled:opacity-40"
             >
@@ -92,21 +92,20 @@ export default function QuizSetView({
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            {(set.isPublic || isOwner) && (
-              <button onClick={copyLink} className={btn.secondary} disabled={!set.isPublic}>
-                {copied ? '✓ コピーしました' : '🔗 共有リンクをコピー'}
-              </button>
-            )}
-            {isOwner && (
-              <button onClick={togglePublic} className={btn.ghost}>
-                {set.isPublic ? '非公開にする' : '公開する'}
-              </button>
-            )}
-            {isOwner && !set.isPublic && (
-              <span className="text-xs text-gray-500">共有するには公開してください（公開するとログインなしで遊べます）</span>
-            )}
-          </div>
+          {isOwner && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <PublishButton
+                source={data.source}
+                name={data.title}
+                quizCount={data.quizzes.length}
+                isPublic={data.isPublic}
+                authorName={data.authorName}
+                defaultAuthor={defaultAuthor}
+                publicShelf={data.publicShelf}
+              />
+              <Link href={data.manageHref} className={btn.ghost}>本棚で開く →</Link>
+            </div>
+          )}
         </div>
       </div>
 
@@ -119,18 +118,11 @@ export default function QuizSetView({
 
       {showList && (
         <div className={`${card} divide-y divide-gray-100 overflow-hidden`}>
-          {quizzes.map(q => (
-            <QuizRow
-              key={q.id}
-              quiz={q}
-              density={density}
-              actions={isOwner ? <button onClick={() => removeFromSet(q.id)} className={btn.danger}>外す</button> : undefined}
-            />
-          ))}
+          {quizzes.map(q => <QuizRow key={q.id} quiz={q} density={density} />)}
         </div>
       )}
 
-      {playing && <QuizStage pool={quizzes} title={set.title} canRecord={loggedIn} onClose={() => setPlaying(false)} />}
+      {playing && <QuizStage pool={quizzes} title={playTitle} canRecord={loggedIn && isOwner} onClose={() => setPlaying(false)} />}
     </div>
   )
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { MAX_REVIEW_STEPS, REVIEW_PRESETS, formatDays, saveStudySettings, type StudySettings } from '@/lib/progress'
+import { DAILY_NEW_PRESETS, MAX_REVIEW_STEPS, REVIEW_PRESETS, formatDays, saveStudySettings, type StudySettings } from '@/lib/progress'
 import { btn } from '@/lib/ui'
 
 export default function StudySettingsDialog({
@@ -13,6 +13,7 @@ export default function StudySettingsDialog({
   onClose: () => void
   onSaved: () => void
 }) {
+  const [dailyNew, setDailyNew] = useState(String(value.dailyNew))
   const [repeats, setRepeats] = useState(value.checkRepeats)
   const [days, setDays] = useState<string[]>(value.reviewDays.map(String))
   const [style, setStyle] = useState(value.reviewStyle)
@@ -20,7 +21,9 @@ export default function StudySettingsDialog({
   const [error, setError] = useState<string | null>(null)
 
   const parsed = days.map(d => Number.parseInt(d, 10))
-  const valid = parsed.every(d => Number.isInteger(d) && d >= 1 && d <= 3650) && parsed.length >= 2 && parsed.length <= MAX_REVIEW_STEPS
+  const daily = Number.parseInt(dailyNew, 10)
+  const dailyValid = Number.isInteger(daily) && daily >= 1 && daily <= 200
+  const valid = dailyValid && parsed.every(d => Number.isInteger(d) && d >= 1 && d <= 3650) && parsed.length >= 2 && parsed.length <= MAX_REVIEW_STEPS
   const presetMatch = REVIEW_PRESETS.find(p => p.days.join(',') === parsed.join(','))
 
   function setDay(i: number, v: string) {
@@ -28,10 +31,11 @@ export default function StudySettingsDialog({
   }
 
   async function save() {
+    if (!dailyValid) { setError('1日の新しい問題数は1〜200問で入れてください。'); return }
     if (!valid) { setError('間隔は1〜3650日の整数で入れてください。'); return }
     setBusy(true)
     setError(null)
-    const err = await saveStudySettings({ reviewDays: parsed, checkRepeats: repeats, reviewStyle: style })
+    const err = await saveStudySettings({ ...value, dailyNew: daily, reviewDays: parsed, checkRepeats: repeats, reviewStyle: style })
     setBusy(false)
     if (err) { setError(`保存できませんでした: ${err}`); return }
     onSaved()
@@ -47,7 +51,28 @@ export default function StudySettingsDialog({
         <p className="mt-1 text-xs text-gray-500">覚えるペースは人それぞれ。自分に合った回数と間隔にできます。</p>
 
         <section className="mt-5">
-          <h3 className="text-sm font-black text-gray-900">✍️ 確かめる：合格までに正しく書く回数</h3>
+          <h3 className="text-sm font-black text-gray-900">📖 1日に新しく覚える問題数</h3>
+          <p className="mb-2 text-xs text-gray-500">「今日の学習」で出す新しい問題の数です。復習はこれとは別に、時期が来た問題がすべて出ます。</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {DAILY_NEW_PRESETS.map(n => (
+              <button key={n} type="button" onClick={() => setDailyNew(String(n))} className={opt(daily === n)}>{n}問</button>
+            ))}
+            <span className="flex items-center gap-1 text-sm text-gray-600">
+              <input
+                value={dailyNew}
+                onChange={e => setDailyNew(e.target.value.replace(/[^\d]/g, ''))}
+                inputMode="numeric"
+                className="w-16 rounded-lg border border-gray-300 px-2 py-1.5 text-right outline-none focus:border-indigo-500"
+                aria-label="1日の新しい問題数"
+              />
+              問
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-gray-400">はじめは10問くらいがおすすめ。新しい問題を増やすほど、数日後の復習も増えます。</p>
+        </section>
+
+        <section className="mt-6">
+          <h3 className="text-sm font-black text-gray-900">✍️ 書いて確かめる：合格までに正しく書く回数</h3>
           <p className="mb-2 text-xs text-gray-500">同じ問題を、間に他の問題をはさみながら何回書かせるか。まちがえたら回数は最初からです。</p>
           <div className="grid grid-cols-5 gap-2">
             {[1, 2, 3, 4, 5].map(n => (
@@ -58,7 +83,7 @@ export default function StudySettingsDialog({
 
         <section className="mt-6">
           <h3 className="text-sm font-black text-gray-900">🔁 復習の間隔：正解してから次に出すまで</h3>
-          <p className="mb-2 text-xs text-gray-500">復習で正解するたびに次の段階へ進みます。まちがえると最初の段階に戻り、10分後にもう一度出ます。</p>
+          <p className="mb-2 text-xs text-gray-500">復習で正解するたびに次の段階へ進みます。まちがえたら書いて覚え直し、最初の段階からやり直します。日付は朝4時に切り替わります。</p>
           <div className="mb-3 grid grid-cols-3 gap-2">
             {REVIEW_PRESETS.map(p => (
               <button key={p.name} type="button" onClick={() => setDays(p.days.map(String))} className={`${opt(presetMatch === p)} text-left`}>

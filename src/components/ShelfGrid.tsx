@@ -94,7 +94,10 @@ export default function ShelfGrid({ shelves }: { shelves: Shelf[] }) {
             <div key={s.id} className={`${card} group relative transition-all hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-md`}>
               <Link href={`/dashboard/${s.id}`} className="block p-4">
                 <div className="mb-3 text-2xl">📚</div>
-                <div className="pr-12 font-semibold text-gray-900">{s.name}</div>
+                <div className="pr-12 font-semibold text-gray-900">
+                  {s.name}
+                  {s.is_public && <span className="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">🌏 公開中</span>}
+                </div>
                 <div className="mt-1 text-xs text-gray-500">{s.item_count}冊 · メモ {s.memo_count}件</div>
               </Link>
               <div className="absolute right-2 top-2 flex gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">

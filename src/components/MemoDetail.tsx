@@ -1,13 +1,15 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import type { Item, Memo, MemoType, Quiz } from '@/types'
+import type { Item, Memo, MemoType, Quiz, Shelf } from '@/types'
 import { useDensity } from '@/lib/density'
 import { DIFFICULTY_LABELS, DIFFICULTY_LEVELS, countTags, toQuiz } from '@/lib/quiz'
 import { btn, card, chip } from '@/lib/ui'
 import TagPicker from '@/components/TagPicker'
+import PublishButton from '@/components/PublishButton'
 import AddMemoForm, { TYPE_LABELS } from '@/components/memo/AddMemoForm'
 import EditMemoForm from '@/components/memo/EditMemoForm'
 import QuizRow from '@/components/quiz/QuizRow'
@@ -21,7 +23,17 @@ const NOTE_STYLE: Record<Exclude<MemoType, 'qa'>, { bar: string; badge: string }
 
 type Filter = 'all' | MemoType
 
-export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] }) {
+export default function MemoDetail({
+  item,
+  shelf,
+  memos,
+  defaultAuthor,
+}: {
+  item: Item
+  shelf: Shelf
+  memos: Memo[]
+  defaultAuthor: string
+}) {
   const router = useRouter()
   const density = useDensity()
 
@@ -73,6 +85,21 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
         </div>
 
         {quizMemos.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={`/dashboard/study?item=${item.id}`} className={btn.primary}>📖 このアイテムを学習</Link>
+            <PublishButton
+              source={{ kind: 'item', id: item.id }}
+              name={item.title}
+              quizCount={quizMemos.length}
+              isPublic={!!item.is_public}
+              authorName={item.author_name ?? null}
+              defaultAuthor={defaultAuthor}
+              publicShelf={shelf.is_public ? { id: shelf.id, name: shelf.name } : null}
+            />
+          </div>
+        )}
+
+        {quizMemos.length > 0 && (
           <div className={`${card} flex flex-wrap items-center gap-2 p-2`}>
             <select value={playGenre} onChange={e => setPlayGenre(e.target.value)}
               className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs outline-none focus:border-indigo-400">
@@ -91,7 +118,7 @@ export default function MemoDetail({ item, memos }: { item: Item; memos: Memo[] 
         )}
       </div>
 
-      <AddMemoForm itemId={item.id} />
+      <AddMemoForm itemId={item.id} existingQuizzes={quizMemos} />
 
       {/* 絞り込み */}
       <div className="flex flex-wrap items-center gap-2">

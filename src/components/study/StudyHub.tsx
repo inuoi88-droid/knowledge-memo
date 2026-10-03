@@ -3,19 +3,24 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import type { PlaySessionRecord, Quiz, QuizProgress } from '@/types'
-import { countTags, shuffle } from '@/lib/quiz'
+import type { PlaySessionRecord, QuizProgress, QuizWithSource, ShelfNode } from '@/types'
+import { shuffle } from '@/lib/quiz'
 import { MODES, RULES } from '@/lib/play'
-import { MASTERY, MASTERY_ORDER, countMastery, formatDays, isDue, masteryOf, type Mastery, type StudySettings } from '@/lib/progress'
+import {
+  MASTERY, MASTERY_ORDER, countIntroducedToday, countMastery, formatDays, isDue, saveStudySettings, studyDayStart,
+  type Mastery, type NewOrder, type StudySettings,
+} from '@/lib/progress'
+import { inScope, normalizeScope, scopeLabel, type Scope } from '@/lib/scope'
 import { unlockSound } from '@/lib/sound'
 import { card } from '@/lib/ui'
-import { perfNow } from '@/lib/stage'
-import QuizFilters from '@/components/quiz/QuizFilters'
-import CountPicker from '@/components/quiz/CountPicker'
-import StudySession, { STUDY_KINDS, buildStudyQueue, type StudyItem, type StudyKind } from './StudySession'
+import ScopePicker, { countByItem, quizTree } from '@/components/ScopePicker'
+import StudySession, { STUDY_STEPS } from './StudySession'
 import StudySettingsDialog from './StudySettingsDialog'
 
+// 1回の学習で出す復習の上限（たまっていたら何回かに分ける）
 const REVIEW_CAP = 100
+const DAY_MS = 24 * 60 * 60 * 1000
+const OLD_STUDY_LABELS: Record<string, string> = { learn: '📖 覚える', check: '✍️ 確かめる', review: '🔁 復習' }
 
 function MasteryBar({ counts, total, className = 'h-3' }: { counts: Record<Mastery, number>; total: number; className?: string }) {
   return (
@@ -28,14 +33,15 @@ function MasteryBar({ counts, total, className = 'h-3' }: { counts: Record<Maste
 }
 
 function sessionModeLabel(mode: string, rule: string) {
-  if (mode.startsWith('study-')) {
-    const k = STUDY_KINDS[mode.slice(6) as StudyKind]
-    return k ? `${k.icon} ${k.name}` : mode
-  }
+  if (mode === 'study') return '📖 学習'
+  if (mode.startsWith('study-')) return OLD_STUDY_LABELS[mode.slice(6)] ?? mode
   const m = MODES.find(x => x.id === mode)
   const r = RULES.find(x => x.id === rule)
   return `${m ? `${m.icon} ${m.name}` : mode}${r && r.id !== 'normal' ? ` ・ ${r.name}` : ''}`
 }
+
+// seen: 「もっと覚える」で続けたときに同じ問題を選ばないよう、続けて出した新しい問題をためておく
+interface SessionState { key: number; title: string; reviews: QuizWithSource[]; fresh: QuizWithSource[]; seen: string[] }
 
 export default function StudyHub({
   quizzes,
@@ -43,71 +49,71 @@ export default function StudyHub({
   sessions,
   nowMs,
   settings,
+  tree,
+  initialScope,
 }: {
-  quizzes: Quiz[]
+  quizzes: QuizWithSource[]
   progress: QuizProgress[]
   sessions: PlaySessionRecord[]
   nowMs: number
   settings: StudySettings
+  tree: ShelfNode[]
+  initialScope: Scope | null
 }) {
   const router = useRouter()
+  const counts = countByItem(quizzes)
+  const qTree = quizTree(tree, counts)
+  const [scope, setScope] = useState<Scope>(() => normalizeScope(initialScope ?? settings.scope, qTree))
+  const [order, setOrder] = useState<NewOrder>(settings.newOrder)
   const [editingSettings, setEditingSettings] = useState(false)
+  const [session, setSession] = useState<SessionState | null>(null)
+  const current: StudySettings = { ...settings, scope, newOrder: order }
   const steps = settings.reviewDays.length
-  const [genres, setGenres] = useState<string[]>([])
-  const [matchAll, setMatchAll] = useState(false)
-  const [levels, setLevels] = useState<number[]>([])
-  const [learnCount, setLearnCount] = useState(20)
-  const [checkCount, setCheckCount] = useState(10)
-  const [session, setSession] = useState<{ kind: StudyKind; title: string; queue: StudyItem[]; startedAt: number } | null>(null)
 
   const progressMap = new Map(progress.map(p => [p.memo_id, p]))
-  const allIds = quizzes.map(q => q.id)
-  const overall = countMastery(allIds, progressMap, steps)
-  const due = quizzes
-    .filter(q => isDue(progressMap.get(q.id), nowMs))
-    .sort((a, b) => Date.parse(progressMap.get(a.id)!.due_at!) - Date.parse(progressMap.get(b.id)!.due_at!))
+  const dueAt = (q: QuizWithSource) => Date.parse(progressMap.get(q.id)?.due_at ?? '')
+  const scoped = quizzes.filter(q => inScope(q, scope))
+  const dueScoped = scoped.filter(q => isDue(progressMap.get(q.id), nowMs)).sort((a, b) => dueAt(a) - dueAt(b))
+  const dueOutside = quizzes.filter(q => isDue(progressMap.get(q.id), nowMs)).length - dueScoped.length
+  const unseen = scoped.filter(q => !progressMap.has(q.id))
+  const introducedToday = countIntroducedToday(progress, nowMs)
+  const newLeft = Math.max(0, settings.dailyNew - introducedToday)
+  const planReview = Math.min(dueScoped.length, REVIEW_CAP)
+  const planNew = Math.min(newLeft, unseen.length)
+  const allDone = planReview + planNew === 0
+  const minutes = Math.max(1, Math.ceil((planReview * 12 + planNew * (10 + settings.checkRepeats * 12)) / 60))
 
-  const target = quizzes.filter(q => {
-    if (genres.length > 0) {
-      const hit = matchAll ? genres.every(g => q.tags.includes(g)) : genres.some(g => q.tags.includes(g))
-      if (!hit) return false
-    }
-    return levels.length === 0 || levels.includes(q.difficulty ?? 0)
-  })
-  const targetCounts = countMastery(target.map(q => q.id), progressMap, steps)
-  const learnPool = target.filter(q => { const m = masteryOf(progressMap.get(q.id), steps); return m === 'new' || m === 'learning' })
-  const checkPool = target.filter(q => masteryOf(progressMap.get(q.id), steps) !== 'mastered')
-  const rangeLabel = [
-    genres.map(g => `#${g}`).join(matchAll ? '×' : '・'),
-    levels.length > 0 && levels.map(l => (l === 0 ? '難易度なし' : '★'.repeat(l))).join('/'),
-  ].filter(Boolean).join(' ') || 'すべてのクイズ'
+  const dayStart = studyDayStart(nowMs)
+  const laterToday = scoped.filter(q => { const t = dueAt(q); return t > nowMs && t < dayStart + DAY_MS }).length
+  const tomorrow = scoped.filter(q => { const t = dueAt(q); return t >= dayStart + DAY_MS && t < dayStart + 2 * DAY_MS }).length
+  const scopeCounts = countMastery(scoped.map(q => q.id), progressMap, steps)
+  const label = scopeLabel(scope, qTree)
 
-  const genreStats = countTags(quizzes).slice(0, 12).map(g => {
-    const ids = quizzes.filter(q => q.tags.includes(g.name)).map(q => q.id)
-    return { ...g, counts: countMastery(ids, progressMap, steps) }
-  })
-
-  function start(kind: StudyKind) {
-    unlockSound()
-    let picked: Quiz[]
-    let title = rangeLabel
-    if (kind === 'review') {
-      picked = due.slice(0, REVIEW_CAP)
-      title = '今日の復習'
-    } else if (kind === 'learn') {
-      // まちがえたことのある問題 → まだやっていない問題 の順に出す
-      const learning = shuffle(learnPool.filter(q => progressMap.has(q.id)))
-      const fresh = shuffle(learnPool.filter(q => !progressMap.has(q.id)))
-      picked = [...learning, ...fresh].slice(0, learnCount)
-    } else {
-      picked = shuffle(checkPool).slice(0, checkCount)
-    }
-    if (picked.length === 0) return
-    setSession({ kind, title, queue: buildStudyQueue(kind, picked, settings), startedAt: perfNow() })
+  function persist(next: Partial<StudySettings>) {
+    void saveStudySettings({ ...current, ...next })
   }
 
-  function toggleIn<T>(list: T[], v: T, set: (l: T[]) => void) {
-    set(list.includes(v) ? list.filter(x => x !== v) : [...list, v])
+  function changeScope(s: Scope) {
+    setScope(s)
+    persist({ scope: s })
+  }
+
+  function changeOrder(o: NewOrder) {
+    setOrder(o)
+    persist({ newOrder: o })
+  }
+
+  function pickFresh(n: number, exclude: ReadonlySet<string> = new Set()) {
+    const pool = unseen.filter(q => !exclude.has(q.id))
+    const ordered = order === 'random' ? shuffle(pool) : [...pool].sort((a, b) => a.position - b.position)
+    return ordered.slice(0, n)
+  }
+
+  function start(fresh: QuizWithSource[], reviews: QuizWithSource[], seen: string[] = []) {
+    if (fresh.length + reviews.length === 0) return
+    unlockSound()
+    if (initialScope) persist({})
+    setSession(s => ({ key: (s?.key ?? 0) + 1, title: label, reviews, fresh, seen: [...seen, ...fresh.map(q => q.id)] }))
   }
 
   if (quizzes.length === 0) {
@@ -118,174 +124,213 @@ export default function StudyHub({
     )
   }
 
+  const moreFor = (s: SessionState) => {
+    const exclude = new Set(s.seen)
+    const n = Math.min(settings.dailyNew, unseen.filter(q => !exclude.has(q.id)).length)
+    return n > 0 ? { label: `＋ もっと覚える（${n}問）`, onStart: () => start(pickFresh(n, exclude), [], s.seen) } : undefined
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-black text-gray-900">📖 勉強</h1>
-          <p className="mt-0.5 text-sm text-gray-500">覚える → 確かめる → 忘れた頃に復習、の3ステップで確実に身につけよう。</p>
+          <h1 className="text-xl font-black text-gray-900">📖 学習</h1>
+          <p className="mt-0.5 text-sm text-gray-500">毎日「今日の学習」を1回やるだけ。復習と新しい問題を、ちょうどいい量で出します。</p>
         </div>
         <button
           onClick={() => setEditingSettings(true)}
           className="rounded-xl border-2 border-gray-100 bg-white px-3 py-2 text-left text-xs text-gray-600 transition-colors hover:border-indigo-200"
         >
           <span className="font-bold text-gray-900">⚙️ 学習の設定</span>
-          <span className="ml-2">書く回数 {settings.checkRepeats}回 ・ 間隔 {settings.reviewDays.map(formatDays).join('→')}</span>
+          <span className="ml-2">1日{settings.dailyNew}問 ・ 書く{settings.checkRepeats}回 ・ 間隔 {settings.reviewDays.map(formatDays).join('→')}</span>
         </button>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-3">
-        <div className="flex flex-col justify-between gap-3 rounded-3xl bg-gradient-to-br from-amber-400 via-orange-500 to-rose-500 p-5 text-white shadow-lg">
-          <div>
-            <div className="text-xs font-bold tracking-widest opacity-90">🔁 今日の復習</div>
-            <div className="text-5xl font-black leading-tight">{due.length}<span className="ml-1 text-base font-bold opacity-90">問</span></div>
-            <p className="mt-1 text-xs opacity-90">覚えた問題が、忘れかけた頃にここに出てきます。</p>
-          </div>
-          <button
-            onClick={() => start('review')}
-            disabled={due.length === 0}
-            className="rounded-2xl bg-white py-3 font-black text-orange-600 shadow transition-transform hover:scale-[1.02] disabled:opacity-50"
-          >
-            {due.length === 0 ? '今日の復習はおわり！🎉' : '▶ 復習をはじめる'}
-          </button>
-        </div>
-
-        <div className={`${card} flex flex-col gap-3 p-5 lg:col-span-2`}>
-          <div className="flex items-baseline justify-between">
-            <span className="text-sm font-black text-gray-900">覚えた度</span>
-            <span className="text-xs text-gray-500">全{quizzes.length}問</span>
-          </div>
-          <MasteryBar counts={overall} total={quizzes.length} className="h-4" />
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {MASTERY_ORDER.map(m => (
-              <div key={m} className="rounded-xl bg-gray-50 px-3 py-2">
-                <div className="flex items-center gap-1.5 text-xs text-gray-500"><span className={`h-2.5 w-2.5 rounded-full ${MASTERY[m].color}`} />{MASTERY[m].label}</div>
-                <div className={`text-xl font-black ${MASTERY[m].text}`}>{overall[m]}<span className="ml-0.5 text-xs font-normal text-gray-400">問</span></div>
-              </div>
-            ))}
-          </div>
-          <p className="text-[11px] text-gray-400">
-            覚えた度は、復習の時期に正解するたびに1段階上がり（同じ日に何度正解しても1段階だけ）、{Math.max(1, steps - 1)}段階目で「覚えた」になります。まちがえると最初からです。
-          </p>
-        </div>
-      </div>
-
       <section className="rounded-3xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 p-[3px] shadow-lg">
-        <div className="flex flex-col gap-5 rounded-[21px] bg-white p-4 sm:p-6">
-          <div className="flex items-center gap-2">
-            <h2 className="text-base font-black text-gray-900">学習をはじめる</h2>
-            <span className="ml-auto text-sm text-gray-500"><b className="text-xl font-black text-indigo-600">{target.length}</b> 問</span>
-          </div>
-          <QuizFilters
-            tagCounts={countTags(quizzes)}
-            genres={genres}
-            matchAll={matchAll}
-            levels={levels}
-            onToggleGenre={g => toggleIn(genres, g, setGenres)}
-            onToggleMatchAll={() => setMatchAll(v => !v)}
-            onToggleLevel={l => toggleIn(levels, l, setLevels)}
-            onClear={() => { setGenres([]); setLevels([]) }}
-          />
-          <MasteryBar counts={targetCounts} total={target.length} />
+        <div className="flex flex-col gap-4 rounded-[21px] bg-white p-4 sm:p-6">
+          <ScopePicker tree={qTree} counts={counts} value={scope} onChange={changeScope} total={scoped.length} />
 
-          <div className="grid gap-3 md:grid-cols-2">
-            {([
-              ['learn', learnPool, learnCount, setLearnCount, '未学習・学習中の問題'],
-              ['check', checkPool, checkCount, setCheckCount, 'まだ「覚えた」になっていない問題'],
-            ] as const).map(([kind, pool, count, setCount, poolLabel], i) => (
-              <div key={kind} className="flex flex-col gap-3 rounded-2xl border-2 border-gray-100 p-4">
-                <div className="flex items-center gap-3">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-xl">{STUDY_KINDS[kind].icon}</span>
-                  <div className="min-w-0">
-                    <div className="font-black text-gray-900">STEP {i + 1}　{STUDY_KINDS[kind].name}</div>
-                    <div className="text-xs text-gray-500">{STUDY_KINDS[kind].desc}</div>
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">
-                  {poolLabel}：<b className="text-gray-900">{pool.length}問</b>
-                  {kind === 'check' && <>（1問につき <b className="text-gray-900">{settings.checkRepeats}回</b> 正しく書けたら合格）</>}
-                </div>
-                {pool.length > 0 && <CountPicker max={pool.length} value={Math.min(count, pool.length)} onChange={setCount} presets={[5, 10, 20, 50]} />}
-                <button
-                  onClick={() => start(kind)}
-                  disabled={pool.length === 0}
-                  className="mt-auto rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 py-3 font-black text-white shadow disabled:opacity-40"
-                >
-                  {pool.length === 0 ? 'この範囲はぜんぶ覚えました 🎉' : `▶ ${Math.min(count, pool.length)}問で${STUDY_KINDS[kind].name}`}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-gray-500">新しい問題の順番</span>
+            <div className="flex rounded-xl bg-gray-100 p-1 text-sm">
+              {([['sequential', '▶ 初めから順に'], ['random', '🔀 ランダム']] as [NewOrder, string][]).map(([o, l]) => (
+                <button key={o} type="button" onClick={() => changeOrder(o)}
+                  className={`rounded-lg px-3 py-1 font-bold transition-colors ${order === o ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+                  {l}
                 </button>
-              </div>
-            ))}
+              ))}
+            </div>
+            <span className="text-[11px] text-gray-400">
+              {order === 'sequential' ? '追加した順（表の上から）に、前回の続きから出します' : 'まだ出していない問題からランダムに出します'}。一度出した問題が最初から出直すことはありません。
+            </span>
           </div>
-          <p className="text-xs text-gray-500">
-            STEP 3「定着」は、上の <b>🔁 今日の復習</b> です。正解した問題が {settings.reviewDays.map(formatDays).join(' → ')} 後…と間隔をあけて出てきます（
-            <button onClick={() => setEditingSettings(true)} className="text-indigo-600 hover:underline">間隔を変える</button>）。
-          </p>
+
+          {!allDone ? (
+            <div className="flex flex-col gap-3 rounded-2xl bg-indigo-50/70 p-4">
+              <div className="text-sm font-black text-indigo-950">今日やること</div>
+              <ol className="grid gap-2 sm:grid-cols-3">
+                {([
+                  ['review', planReview > 0 ? `${planReview}問` : 'なし', '前に覚えた問題を思い出す'],
+                  ['learn', planNew > 0 ? `${planNew}問` : 'なし', '新しい問題の答えを見て覚える'],
+                  ['check', planNew > 0 ? `1問${settings.checkRepeats}回` : '—', 'すぐに答えを書いて身につける'],
+                ] as const).map(([s, v, d], i) => (
+                  <li key={s} className={`flex items-center gap-3 rounded-xl bg-white px-3 py-2.5 ${(s === 'review' ? planReview : planNew) === 0 ? 'opacity-50' : ''}`}>
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-sm font-black text-white">{i + 1}</span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-black text-gray-900">{STUDY_STEPS[s].icon} {STUDY_STEPS[s].name} <span className="text-indigo-600">{v}</span></span>
+                      <span className="block text-[11px] text-gray-500">{d}</span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <button
+                onClick={() => start(pickFresh(planNew), dueScoped.slice(0, REVIEW_CAP))}
+                className="rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 py-4 text-xl font-black text-white shadow-lg transition-transform hover:scale-[1.01] active:scale-[0.99]"
+              >
+                <span className="block">▶ 今日の学習をはじめる</span>
+                <span className="block text-xs font-bold opacity-80">目安 約{minutes}分</span>
+              </button>
+              {dueScoped.length > REVIEW_CAP && (
+                <p className="text-center text-xs text-gray-500">復習がたまっているので、{REVIEW_CAP}問ずつに分けて出します（残り {dueScoped.length - REVIEW_CAP}問）。</p>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2 rounded-2xl bg-emerald-50 p-5 text-center">
+              <div className="text-3xl">🎉</div>
+              <div className="text-lg font-black text-emerald-800">
+                {unseen.length === 0 && scoped.length > 0 ? 'この範囲は全部の問題を覚え始めました！' : '今日の分は完了！'}
+              </div>
+              <p className="text-xs text-emerald-900/80">
+                {laterToday > 0 && <>まちがえた {laterToday}問 が少しあとでまた出ます。</>}
+                {tomorrow > 0 ? `明日は復習が ${tomorrow}問 あります。` : 'また明日、復習の時期が来た問題が出てきます。'}
+              </p>
+              {unseen.length > 0 && (
+                <button onClick={() => start(pickFresh(settings.dailyNew), [])} className="mt-1 rounded-xl bg-white px-4 py-2 text-sm font-bold text-indigo-700 shadow-sm ring-1 ring-indigo-100 hover:bg-indigo-50">
+                  ＋ もっと覚える（{Math.min(settings.dailyNew, unseen.length)}問）
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+            <span>今日 新しく覚えた <b className="text-gray-900">{introducedToday}</b> / {settings.dailyNew}問</span>
+            <span>まだ出していない問題 <b className="text-gray-900">{unseen.length}</b>問</span>
+            <button onClick={() => setEditingSettings(true)} className="text-indigo-600 hover:underline">1日の問題数を変える</button>
+          </div>
+          {dueOutside > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              ほかの本棚にも復習が <b>{dueOutside}問</b> あります。
+              <button onClick={() => changeScope({ shelfIds: [], itemIds: [] })} className="font-bold text-indigo-600 hover:underline">すべての本棚にする</button>
+            </div>
+          )}
         </div>
       </section>
 
       <div className="grid gap-5 lg:grid-cols-2">
-        <section className={`${card} p-5`}>
-          <h2 className="mb-3 text-sm font-black text-gray-900">ジャンル別の進み具合</h2>
-          <ul className="flex flex-col gap-2.5">
-            {genreStats.map(g => (
-              <li key={g.name}>
-                <button onClick={() => setGenres([g.name])} className="w-full text-left" title="このジャンルで学習する">
-                  <div className="mb-1 flex items-baseline justify-between text-sm">
-                    <span className="font-bold text-gray-800 hover:text-indigo-700">#{g.name}</span>
-                    <span className="text-xs text-gray-500">
-                      覚えた <b className="text-emerald-600">{Math.round((g.counts.mastered / g.count) * 100)}%</b> ・ {g.count}問
-                    </span>
-                  </div>
-                  <MasteryBar counts={g.counts} total={g.count} className="h-2" />
-                </button>
-              </li>
+        <section className={`${card} flex flex-col gap-3 p-5`}>
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm font-black text-gray-900">覚えた度</span>
+            <span className="truncate pl-2 text-xs text-gray-500">{label} ・ {scoped.length}問</span>
+          </div>
+          <MasteryBar counts={scopeCounts} total={scoped.length} className="h-4" />
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {MASTERY_ORDER.map(m => (
+              <div key={m} className="rounded-xl bg-gray-50 px-3 py-2">
+                <div className="flex items-center gap-1.5 text-xs text-gray-500"><span className={`h-2.5 w-2.5 rounded-full ${MASTERY[m].color}`} />{MASTERY[m].label}</div>
+                <div className={`text-xl font-black ${MASTERY[m].text}`}>{scopeCounts[m]}<span className="ml-0.5 text-xs font-normal text-gray-400">問</span></div>
+              </div>
             ))}
-          </ul>
+          </div>
+          <p className="text-[11px] text-gray-400">
+            復習で正解するたびに1段階上がり（同じ日に何度正解しても1段階だけ）、{Math.max(1, steps - 1)}段階目で「覚えた」になります。まちがえると最初からです。
+          </p>
         </section>
 
         <section className={`${card} p-5`}>
-          <h2 className="mb-3 text-sm font-black text-gray-900">最近の記録</h2>
-          {sessions.length === 0 ? (
-            <p className="py-6 text-center text-sm text-gray-400">まだ記録がありません。クイズで遊ぶか勉強すると、ここに残ります。</p>
-          ) : (
-            <ul className="divide-y divide-gray-100">
-              {sessions.map(s => {
-                const acc = s.total > 0 ? Math.round((s.correct / s.total) * 100) : 0
-                return (
-                  <li key={s.id} className="flex items-center gap-3 py-2 text-sm">
-                    <span className="w-20 shrink-0 text-xs text-gray-400">
-                      {new Date(s.created_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium text-gray-800">{s.title}</span>
-                      <span className="text-xs text-gray-500">{sessionModeLabel(s.mode, s.rule)}</span>
-                    </span>
-                    <span className="shrink-0 text-right">
-                      <span className="block font-black tabular-nums text-gray-900">{s.correct}<span className="text-xs text-gray-400">/{s.total}</span></span>
-                      <span className={`text-xs font-bold ${acc >= 80 ? 'text-emerald-600' : acc >= 50 ? 'text-amber-600' : 'text-rose-500'}`}>{acc}%</span>
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-          <p className="mt-3 text-[11px] text-gray-400">記録は最新300件まで保存されます。</p>
+          <h2 className="mb-3 text-sm font-black text-gray-900">本棚ごとの進み具合</h2>
+          <ul className="flex flex-col gap-3">
+            {qTree.map(s => {
+              const ids = quizzes.filter(q => q.shelf_id === s.id).map(q => q.id)
+              const c = countMastery(ids, progressMap, steps)
+              return (
+                <li key={s.id}>
+                  <button onClick={() => changeScope({ shelfIds: [s.id], itemIds: [] })} className="w-full text-left" title="この本棚を学習する">
+                    <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
+                      <span className="truncate font-bold text-gray-800 hover:text-indigo-700">📚 {s.name}</span>
+                      <span className="shrink-0 text-xs text-gray-500">
+                        覚えた <b className="text-emerald-600">{Math.round((c.mastered / Math.max(1, ids.length)) * 100)}%</b> ・ {ids.length}問
+                      </span>
+                    </div>
+                    <MasteryBar counts={c} total={ids.length} className="h-2" />
+                  </button>
+                  {s.items.length > 1 && (
+                    <ul className="mt-1.5 flex flex-col gap-1 pl-4">
+                      {s.items.map(i => {
+                        const iids = quizzes.filter(q => q.item_id === i.id).map(q => q.id)
+                        const ic = countMastery(iids, progressMap, steps)
+                        return (
+                          <li key={i.id}>
+                            <button onClick={() => changeScope({ shelfIds: [], itemIds: [i.id] })} className="flex w-full items-center gap-2 text-left text-xs" title="このアイテムを学習する">
+                              <span className="w-32 shrink-0 truncate text-gray-600 hover:text-indigo-700 sm:w-40">{i.title}</span>
+                              <MasteryBar counts={ic} total={iids.length} className="h-1.5" />
+                              <span className="w-10 shrink-0 text-right text-gray-400">{iids.length}問</span>
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+          <p className="mt-3 text-[11px] text-gray-400">本棚やアイテムを押すと、そこを学習する範囲にします。</p>
         </section>
       </div>
 
+      <section className={`${card} p-5`}>
+        <h2 className="mb-3 text-sm font-black text-gray-900">最近の記録</h2>
+        {sessions.length === 0 ? (
+          <p className="py-6 text-center text-sm text-gray-400">まだ記録がありません。クイズで遊ぶか学習すると、ここに残ります。</p>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {sessions.map(s => {
+              const acc = s.total > 0 ? Math.round((s.correct / s.total) * 100) : 0
+              return (
+                <li key={s.id} className="flex items-center gap-3 py-2 text-sm">
+                  <span className="w-20 shrink-0 text-xs text-gray-400">
+                    {new Date(s.created_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium text-gray-800">{s.title}</span>
+                    <span className="text-xs text-gray-500">{sessionModeLabel(s.mode, s.rule)}</span>
+                  </span>
+                  <span className="shrink-0 text-right">
+                    <span className="block font-black tabular-nums text-gray-900">{s.correct}<span className="text-xs text-gray-400">/{s.total}</span></span>
+                    <span className={`text-xs font-bold ${acc >= 80 ? 'text-emerald-600' : acc >= 50 ? 'text-amber-600' : 'text-rose-500'}`}>{acc}%</span>
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+        <p className="mt-3 text-[11px] text-gray-400">記録は最新300件まで保存されます。</p>
+      </section>
+
       {session && (
         <StudySession
-          kind={session.kind}
+          key={session.key}
           title={session.title}
-          initialQueue={session.queue}
-          settings={settings}
-          startedAt={session.startedAt}
+          reviews={session.reviews}
+          fresh={session.fresh}
+          settings={current}
+          more={moreFor(session)}
           onClose={() => { setSession(null); router.refresh() }}
         />
       )}
       {editingSettings && (
         <StudySettingsDialog
-          value={settings}
+          value={current}
           onClose={() => setEditingSettings(false)}
           onSaved={() => { setEditingSettings(false); router.refresh() }}
         />

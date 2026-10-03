@@ -62,68 +62,15 @@ drop policy if exists "Own memos" on public.memos;
 create policy "Own memos" on public.memos for all
   using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 
--- ▼ クイズ機能（解説・難易度・クイズセット・共有）
+-- ▼ クイズ機能（解説・難易度）
 
 alter table public.memos add column if not exists explanation text;
 alter table public.memos add column if not exists difficulty smallint
   check (difficulty between 1 and 5);
 
-create table if not exists public.quiz_sets (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null default auth.uid() references auth.users on delete cascade,
-  title text not null,
-  description text,
-  author_name text,
-  is_public boolean not null default false,
-  created_at timestamptz not null default now()
-);
-create index if not exists quiz_sets_user_id_idx on public.quiz_sets (user_id);
-create index if not exists quiz_sets_public_created_idx on public.quiz_sets (created_at desc) where is_public;
-
-create table if not exists public.quiz_set_items (
-  quiz_set_id uuid not null references public.quiz_sets on delete cascade,
-  memo_id uuid not null references public.memos on delete cascade,
-  position int not null default 0,
-  primary key (quiz_set_id, memo_id)
-);
-create index if not exists quiz_set_items_memo_id_idx on public.quiz_set_items (memo_id);
-
-alter table public.quiz_sets enable row level security;
-alter table public.quiz_set_items enable row level security;
-
-create policy "Own quiz sets" on public.quiz_sets for all to authenticated
-  using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
-create policy "Public quiz sets are readable" on public.quiz_sets for select to anon, authenticated
-  using (is_public);
-
--- memos の公開ポリシーが quiz_set_items を読むので、ここで memos を直接読むと RLS が循環する。
--- 所有チェックは RLS を経由しない関数で行う。
 create schema if not exists private;
-create or replace function private.owns_memo(target uuid) returns boolean
-  language sql stable security definer set search_path = ''
-  as $fn$ select exists (select 1 from public.memos m where m.id = target and m.user_id = (select auth.uid())) $fn$;
-revoke all on function private.owns_memo(uuid) from public;
-grant usage on schema private to authenticated;
-grant execute on function private.owns_memo(uuid) to authenticated;
 
-create policy "Own quiz set items" on public.quiz_set_items for all to authenticated
-  using (exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.user_id = (select auth.uid())))
-  with check (
-    exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.user_id = (select auth.uid()))
-    and private.owns_memo(memo_id)
-  );
-create policy "Public quiz set items are readable" on public.quiz_set_items for select to anon, authenticated
-  using (exists (select 1 from public.quiz_sets s where s.id = quiz_set_id and s.is_public));
-
--- 公開セットに入っているクイズだけは、他の人（未ログイン含む）も読める
-create policy "Quizzes in public sets are readable" on public.memos for select to anon, authenticated
-  using (
-    type = 'qa' and exists (
-      select 1 from public.quiz_set_items i
-      join public.quiz_sets s on s.id = i.quiz_set_id
-      where i.memo_id = memos.id and s.is_public
-    )
-  );
+-- （以前あったクイズセット quiz_sets / quiz_set_items は、本棚・アイテムの公開に置き換えて削除済み）
 
 -- ▼ ビジュアルクイズ・タグ重複防止・成績の記録・勉強モード
 -- （本番DBには migration「quiz_progress_play_sessions_image_url_tag_dedupe」として適用済み）
@@ -154,26 +101,32 @@ create table if not exists public.quiz_progress (
   memo_id uuid not null references public.memos on delete cascade,
   correct_count int not null default 0,
   wrong_count int not null default 0,
-  level smallint not null default 0,          -- 覚えた度 0〜5
+  level smallint not null default 0,          -- 覚えた度（復習の段階）
   last_result boolean,
   last_answered_at timestamptz,
   due_at timestamptz,                         -- 次に復習する日時
+  introduced_at timestamptz,                  -- 学習で初めて出した日時（1日の新しい問題数を数える）
   primary key (user_id, memo_id)
 );
+create index if not exists quiz_progress_introduced_idx on public.quiz_progress (user_id, introduced_at) where introduced_at is not null;
 create index if not exists quiz_progress_memo_id_idx on public.quiz_progress (memo_id);
 create index if not exists quiz_progress_due_idx on public.quiz_progress (user_id, due_at);
 alter table public.quiz_progress enable row level security;
 create policy "Own quiz progress" on public.quiz_progress for all to authenticated
   using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 
--- 勉強モードの個人設定（復習の間隔・確かめるで書く回数・復習の答え方）
--- （本番DBには migration「study_settings_configurable_review」として適用済み）
+-- 学習の個人設定（復習の間隔・書く回数・復習の答え方・1日の新しい問題数・出す順番・範囲）
+-- （本番DBには migration「study_settings_configurable_review」「study_unified_scope_publish」として適用済み）
 create table if not exists public.study_settings (
   user_id uuid primary key default auth.uid() references auth.users on delete cascade,
   review_days int[] not null default '{1,3,7,14,30}'
     check (cardinality(review_days) between 2 and 8 and 1 <= all (review_days) and 3650 >= all (review_days)),
   check_repeats smallint not null default 2 check (check_repeats between 1 and 5),
   review_style text not null default 'typing' check (review_style in ('typing', 'cards')),
+  daily_new smallint not null default 10 check (daily_new between 1 and 200),
+  new_order text not null default 'sequential' check (new_order in ('sequential', 'random')),
+  scope_shelf_ids uuid[] not null default '{}',
+  scope_item_ids uuid[] not null default '{}',
   updated_at timestamptz not null default now()
 );
 alter table public.study_settings enable row level security;
@@ -181,24 +134,28 @@ create policy "Own study settings" on public.study_settings for all to authentic
   using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 
 -- 1回答ぶんを記録。復習の間隔は本人の設定（なければ 1,3,7,14,30 日）。
--- 復習の時期が来ていない問題は、正解しても覚えた度を上げない（同じ日に連打して上げられないように）
-create or replace function public.record_answer(p_memo_id uuid, p_correct boolean) returns void
+-- ・復習日は「日」単位（日本時間の朝4時に切り替え）。夜に答えても翌日の朝から復習に出る
+-- ・まちがえた直後（覚えた度0）に正解したら、明日の復習へ
+-- ・復習の時期が来ていない問題は、正解しても覚えた度を上げない（同じ日に連打して上げられないように）
+create or replace function public.record_answer(p_memo_id uuid, p_correct boolean, p_study boolean default false) returns void
   language plpgsql security invoker set search_path = '' as $fn$
 declare
   days int[];
   steps int;
+  today timestamptz := date_bin('1 day', now(), timestamptz '2000-01-01 04:00:00+09');
 begin
   select s.review_days into days from public.study_settings s where s.user_id = (select auth.uid());
   days := coalesce(days, '{1,3,7,14,30}'::int[]);
   steps := cardinality(days);
-  insert into public.quiz_progress as p (user_id, memo_id, correct_count, wrong_count, level, last_result, last_answered_at, due_at)
+  insert into public.quiz_progress as p (user_id, memo_id, correct_count, wrong_count, level, last_result, last_answered_at, due_at, introduced_at)
   values (
     (select auth.uid()), p_memo_id,
     case when p_correct then 1 else 0 end,
     case when p_correct then 0 else 1 end,
     case when p_correct then 1 else 0 end,
     p_correct, now(),
-    case when p_correct then now() + make_interval(days => days[1]) else now() + interval '10 minutes' end
+    case when p_correct then today + make_interval(days => days[1]) else now() + interval '10 minutes' end,
+    case when p_study then now() end
   )
   on conflict (user_id, memo_id) do update set
     correct_count = p.correct_count + case when p_correct then 1 else 0 end,
@@ -206,16 +163,18 @@ begin
     level = case
       when not p_correct then 0
       when p.due_at is null or p.due_at <= now() then least(steps, p.level + 1)
+      when p.level = 0 then 1
       else p.level end,
     due_at = case
       when not p_correct then now() + interval '10 minutes'
-      when p.due_at is null or p.due_at <= now() then now() + make_interval(days => days[least(steps, p.level + 1)])
+      when p.due_at is null or p.due_at <= now() then today + make_interval(days => days[least(steps, p.level + 1)])
+      when p.level = 0 then today + make_interval(days => days[1])
       else p.due_at end,
     last_result = p_correct,
     last_answered_at = now();
 end $fn$;
-revoke all on function public.record_answer(uuid, boolean) from public, anon;
-grant execute on function public.record_answer(uuid, boolean) to authenticated;
+revoke all on function public.record_answer(uuid, boolean, boolean) from public, anon;
+grant execute on function public.record_answer(uuid, boolean, boolean) to authenticated;
 
 -- 1回ごとのプレイ記録（1人あたり最新300件だけ残す）
 create table if not exists public.play_sessions (
@@ -246,3 +205,82 @@ end $fn$;
 drop trigger if exists prune_play_sessions on public.play_sessions;
 create trigger prune_play_sessions after insert on public.play_sessions
   for each row execute function private.prune_play_sessions();
+
+-- ▼ 問題の並び順・本棚とアイテムの公開
+-- （本番DBには migration「study_unified_scope_publish」として適用済み）
+
+-- 追加した順（スプレッドシートの上から）。「初めから」学習の順番
+create sequence if not exists public.memos_position_seq;
+alter table public.memos add column if not exists position bigint not null default nextval('public.memos_position_seq');
+alter sequence public.memos_position_seq owned by public.memos.position;
+grant usage, select on sequence public.memos_position_seq to authenticated;
+create index if not exists memos_item_position_idx on public.memos (item_id, position);
+
+-- 貼り直した表の順に並べ替える（自分の問題だけ）
+create or replace function public.reorder_quizzes(p_ids uuid[]) returns void
+  language plpgsql security invoker set search_path = '' as $fn$
+declare
+  base bigint;
+begin
+  base := nextval('public.memos_position_seq');
+  perform setval('public.memos_position_seq', base + coalesce(cardinality(p_ids), 0) + 1, false);
+  update public.memos m set position = base + u.ord
+  from unnest(p_ids) with ordinality as u(id, ord)
+  where m.id = u.id and m.user_id = (select auth.uid());
+end $fn$;
+revoke all on function public.reorder_quizzes(uuid[]) from public, anon;
+grant execute on function public.reorder_quizzes(uuid[]) to authenticated;
+
+-- 本棚・アイテムを公開すると、中のクイズがすべて公開される（引用・感想のメモは公開しない）
+alter table public.shelves
+  add column if not exists is_public boolean not null default false,
+  add column if not exists author_name text,
+  add column if not exists published_at timestamptz;
+alter table public.items
+  add column if not exists is_public boolean not null default false,
+  add column if not exists author_name text,
+  add column if not exists published_at timestamptz;
+create index if not exists shelves_public_idx on public.shelves (published_at desc) where is_public;
+create index if not exists items_public_idx on public.items (published_at desc) where is_public;
+
+create or replace function private.shelf_is_public(target uuid) returns boolean
+  language sql stable security definer set search_path = ''
+  as $fn$ select exists (select 1 from public.shelves s where s.id = target and s.is_public) $fn$;
+create or replace function private.item_is_public(target uuid) returns boolean
+  language sql stable security definer set search_path = ''
+  as $fn$ select exists (
+    select 1 from public.items i join public.shelves s on s.id = i.shelf_id
+    where i.id = target and (i.is_public or s.is_public)
+  ) $fn$;
+revoke all on function private.shelf_is_public(uuid) from public;
+revoke all on function private.item_is_public(uuid) from public;
+grant usage on schema private to anon, authenticated;
+grant execute on function private.shelf_is_public(uuid) to anon, authenticated;
+grant execute on function private.item_is_public(uuid) to anon, authenticated;
+
+create policy "Public shelves are readable" on public.shelves for select to anon, authenticated
+  using (is_public);
+create policy "Public items are readable" on public.items for select to anon, authenticated
+  using (is_public or private.shelf_is_public(shelf_id));
+create policy "Quizzes in public items are readable" on public.memos for select to anon, authenticated
+  using (type = 'qa' and private.item_is_public(item_id));
+
+-- 公開中の本棚・アイテムの一覧。呼び出した人の権限（RLS）で読む
+create or replace function public.list_public_quiz_sources()
+  returns table (kind text, id uuid, title text, author_name text, quiz_count bigint, published_at timestamptz, is_mine boolean)
+  language sql stable security invoker set search_path = '' as $fn$
+  select * from (
+    select 'shelf'::text, s.id, s.name, s.author_name,
+      (select count(*) from public.memos m join public.items i on i.id = m.item_id where i.shelf_id = s.id and m.type = 'qa'),
+      s.published_at, coalesce(s.user_id = (select auth.uid()), false)
+    from public.shelves s where s.is_public
+    union all
+    select 'item'::text, i.id, i.title, i.author_name,
+      (select count(*) from public.memos m where m.item_id = i.id and m.type = 'qa'),
+      i.published_at, coalesce(i.user_id = (select auth.uid()), false)
+    from public.items i
+    where i.is_public and not private.shelf_is_public(i.shelf_id)
+  ) t order by published_at desc nulls last limit 200
+$fn$;
+revoke all on function public.list_public_quiz_sources() from public;
+grant execute on function public.list_public_quiz_sources() to anon, authenticated;

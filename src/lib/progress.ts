@@ -1,12 +1,27 @@
-import type { QuizProgress } from '@/types'
+import type { QuizProgress, StudySettingsRow } from '@/types'
 import { createClient } from './supabase/client'
+import { ALL_SCOPE, type Scope } from './scope'
 
 // ---- 記録（失敗してもゲームは止めない） ----
 
-export function recordAnswer(memoId: string, correct: boolean) {
+// study: 学習モードで初めて出した問題として数える（1日の新しい問題数に使う）
+export function recordAnswer(memoId: string, correct: boolean, study = false) {
   void createClient()
-    .rpc('record_answer', { p_memo_id: memoId, p_correct: correct })
+    .rpc('record_answer', { p_memo_id: memoId, p_correct: correct, p_study: study })
     .then(({ error }) => { if (error) console.warn('record_answer failed', error.message) })
+}
+
+// 学習の「1日」は日本時間の朝4時に切り替わる（DB の record_answer と同じ）
+const DAY_MS = 24 * 60 * 60 * 1000
+const DAY_SHIFT_MS = 5 * 60 * 60 * 1000 // UTC+9 から 4時間ずらす
+
+export function studyDayStart(now: number): number {
+  return Math.floor((now + DAY_SHIFT_MS) / DAY_MS) * DAY_MS - DAY_SHIFT_MS
+}
+
+export function countIntroducedToday(progress: readonly QuizProgress[], now: number): number {
+  const start = studyDayStart(now)
+  return progress.filter(p => p.introduced_at && Date.parse(p.introduced_at) >= start).length
 }
 
 export function recordSession(s: {
@@ -70,17 +85,27 @@ export function countMastery(ids: readonly string[], progress: ReadonlyMap<strin
 
 // ---- 勉強モードの設定 ----
 
+export type NewOrder = 'sequential' | 'random'
+
 export interface StudySettings {
   reviewDays: number[]
   checkRepeats: number
   reviewStyle: 'typing' | 'cards'
+  dailyNew: number
+  newOrder: NewOrder
+  scope: Scope
 }
 
 export const DEFAULT_STUDY_SETTINGS: StudySettings = {
   reviewDays: [1, 3, 7, 14, 30],
   checkRepeats: 2,
   reviewStyle: 'typing',
+  dailyNew: 10,
+  newOrder: 'sequential',
+  scope: ALL_SCOPE,
 }
+
+export const DAILY_NEW_PRESETS = [5, 10, 20, 30, 50]
 
 export const REVIEW_PRESETS: { name: string; desc: string; days: number[] }[] = [
   { name: '標準', desc: 'はじめはこれ', days: [1, 3, 7, 14, 30] },
@@ -90,12 +115,17 @@ export const REVIEW_PRESETS: { name: string; desc: string; days: number[] }[] = 
 
 export const MAX_REVIEW_STEPS = 8
 
-export function toStudySettings(row: { review_days: number[]; check_repeats: number; review_style: string } | null): StudySettings {
+export const STUDY_SETTINGS_COLUMNS = 'review_days, check_repeats, review_style, daily_new, new_order, scope_shelf_ids, scope_item_ids'
+
+export function toStudySettings(row: StudySettingsRow | null): StudySettings {
   if (!row) return DEFAULT_STUDY_SETTINGS
   return {
     reviewDays: row.review_days,
     checkRepeats: row.check_repeats,
     reviewStyle: row.review_style === 'cards' ? 'cards' : 'typing',
+    dailyNew: row.daily_new ?? DEFAULT_STUDY_SETTINGS.dailyNew,
+    newOrder: row.new_order === 'random' ? 'random' : 'sequential',
+    scope: { shelfIds: row.scope_shelf_ids ?? [], itemIds: row.scope_item_ids ?? [] },
   }
 }
 
@@ -108,6 +138,10 @@ export async function saveStudySettings(s: StudySettings): Promise<string | null
     review_days: s.reviewDays,
     check_repeats: s.checkRepeats,
     review_style: s.reviewStyle,
+    daily_new: s.dailyNew,
+    new_order: s.newOrder,
+    scope_shelf_ids: s.scope.shelfIds,
+    scope_item_ids: s.scope.itemIds,
     updated_at: new Date().toISOString(),
   })
   return error?.message ?? null

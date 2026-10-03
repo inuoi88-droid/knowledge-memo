@@ -7,7 +7,7 @@ import type { MemoType } from '@/types'
 import { isImageUrl, parseTags } from '@/lib/quiz'
 import { btn, input, label } from '@/lib/ui'
 import { DifficultyPicker } from '@/components/quiz/Difficulty'
-import BulkQuizImport from './BulkQuizImport'
+import BulkQuizImport, { type ExistingQuiz } from './BulkQuizImport'
 import ImageUrlField from './ImageUrlField'
 
 export const TYPE_LABELS: Record<MemoType, string> = {
@@ -22,7 +22,7 @@ const TAB_STYLE: Record<MemoType, string> = {
   thought: 'border-emerald-600 bg-emerald-600 text-white',
 }
 
-export default function AddMemoForm({ itemId }: { itemId: string }) {
+export default function AddMemoForm({ itemId, existingQuizzes }: { itemId: string; existingQuizzes: ExistingQuiz[] }) {
   const router = useRouter()
   const [tab, setTab] = useState<MemoType>('qa')
   const [bulk, setBulk] = useState(false)
@@ -98,7 +98,7 @@ export default function AddMemoForm({ itemId }: { itemId: string }) {
       </div>
 
       {tab === 'qa' && bulk ? (
-        <BulkQuizImport itemId={itemId} onDone={() => setBulk(false)} />
+        <BulkQuizImport itemId={itemId} existing={existingQuizzes} onDone={() => setBulk(false)} />
       ) : (
         <div className="flex flex-col gap-3">
           {tab === 'qa' ? (

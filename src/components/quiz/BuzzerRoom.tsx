@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
-import { fetchAll } from '@/lib/supabase/fetchAll'
-import type { Quiz } from '@/types'
-import { shuffle, toQuiz } from '@/lib/quiz'
+import { fetchSourceQuizzes, fetchSourceTitle } from '@/lib/supabase/queries'
+import type { Quiz, QuizSource } from '@/types'
+import { shuffle } from '@/lib/quiz'
 import { readLocalRoomQuizzes } from '@/lib/room'
 import { INITIAL_ROOM_STATE, createHostEngine, type HostEngine, type RoomState } from '@/lib/buzzerEngine'
 import { setMuted, sfx, unlockSound, useMuted } from '@/lib/sound'
@@ -27,7 +27,7 @@ const BUZZ_WINDOWS = [3000, 5000, 10000, 20000, null] as const
 const ANSWER_LIMITS = [5000, 10000, 15000, 30000, null] as const
 const limitLabel = (ms: number | null) => (ms === null ? '無制限' : `${ms / 1000}秒`)
 
-export default function BuzzerRoom(props: { code: string; setId: string | null; local: boolean; wantsHost: boolean }) {
+export default function BuzzerRoom(props: { code: string; source: QuizSource | null; local: boolean; wantsHost: boolean }) {
   const [me, setMe] = useState<Me | null>(null)
   if (!me) return <JoinScreen code={props.code} wantsHost={props.wantsHost} onJoin={setMe} />
   return <Room {...props} me={me} />
@@ -73,32 +73,17 @@ function JoinScreen({ code, wantsHost, onJoin }: { code: string; wantsHost: bool
 async function loadPool(
   supabase: ReturnType<typeof createClient>,
   code: string,
-  setId: string | null,
+  source: QuizSource | null,
   local: boolean,
 ): Promise<{ title: string; quizzes: Quiz[] } | null> {
   if (local) return readLocalRoomQuizzes(code)
-  if (!setId) return null
-  const [{ data: set }, rows] = await Promise.all([
-    supabase.from('quiz_sets').select('title').eq('id', setId).maybeSingle(),
-    fetchAll((from, to) =>
-      supabase
-        .from('quiz_set_items')
-        .select('position, memos(id, question, answer, explanation, difficulty, tags, image_url)', { count: 'exact' })
-        .eq('quiz_set_id', setId)
-        .order('position')
-        .order('memo_id')
-        .range(from, to),
-    ),
-  ])
-  if (!set) return null
-  const quizzes = rows
-    .map(r => r.memos as unknown as Parameters<typeof toQuiz>[0] | null)
-    .filter((m): m is Parameters<typeof toQuiz>[0] => !!m)
-    .map(toQuiz)
-  return { title: set.title, quizzes }
+  if (!source) return null
+  const [title, quizzes] = await Promise.all([fetchSourceTitle(supabase, source), fetchSourceQuizzes(supabase, source)])
+  if (title === null) return null
+  return { title, quizzes }
 }
 
-function Room({ code, setId, local, wantsHost, me }: { code: string; setId: string | null; local: boolean; wantsHost: boolean; me: Me }) {
+function Room({ code, source, local, wantsHost, me }: { code: string; source: QuizSource | null; local: boolean; wantsHost: boolean; me: Me }) {
   const [supabase] = useState(createClient)
   const muted = useMuted()
   const channelRef = useRef<RealtimeChannel | null>(null)
@@ -204,16 +189,19 @@ function Room({ code, setId, local, wantsHost, me }: { code: string; setId: stri
   }, [supabase, code, me.id, me.name, apply])
 
   // ホスト：問題の読み込み
+  const sourceKind = source?.kind ?? null
+  const sourceId = source?.id ?? null
   useEffect(() => {
     if (!isHost) return
     let cancelled = false
-    loadPool(supabase, code, setId, local).catch(() => null).then(res => {
+    const src = sourceKind && sourceId ? { kind: sourceKind, id: sourceId } : null
+    loadPool(supabase, code, src, local).catch(() => null).then(res => {
       if (cancelled) return
       if (res && res.quizzes.length > 0) setPool(res)
-      else setPoolError('問題を読み込めませんでした。セットが非公開か、削除された可能性があります。')
+      else setPoolError('問題を読み込めませんでした。非公開になったか、削除された可能性があります。')
     })
     return () => { cancelled = true }
-  }, [isHost, supabase, code, setId, local])
+  }, [isHost, supabase, code, sourceKind, sourceId, local])
 
   // ホスト：進行エンジン
   useEffect(() => {

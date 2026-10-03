@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { createClient, getUser } from '@/lib/supabase/server'
+import { displayName } from '@/lib/user'
 import ItemTable from '@/components/ItemTable'
 import Breadcrumb from '@/components/Breadcrumb'
 
@@ -17,7 +18,7 @@ export default async function ShelfPage({ params }: { params: Promise<{ shelfId:
       .single(),
     supabase
       .from('items')
-      .select('*, memos(id)')
+      .select('*, memos(type)')
       .eq('shelf_id', shelfId)
       .order('created_at', { ascending: false }),
     supabase
@@ -29,15 +30,16 @@ export default async function ShelfPage({ params }: { params: Promise<{ shelfId:
 
   if (!shelf) notFound()
 
-  const itemsWithCount = (items ?? []).map(i => ({
+  const itemsWithCount = (items ?? []).map(({ memos, ...i }) => ({
     ...i,
-    memo_count: i.memos?.length ?? 0,
+    memo_count: memos?.length ?? 0,
+    quiz_count: (memos as { type: string }[] | null)?.filter(m => m.type === 'qa').length ?? 0,
   }))
 
   return (
     <div>
       <Breadcrumb shelf={shelf} />
-      <ItemTable shelf={shelf} items={itemsWithCount} allShelves={allShelves ?? []} />
+      <ItemTable shelf={shelf} items={itemsWithCount} allShelves={allShelves ?? []} defaultAuthor={displayName(user)} />
     </div>
   )
 }

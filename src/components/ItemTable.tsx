@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Shelf, Item, SourceType } from '@/types'
 import { btn, card, input } from '@/lib/ui'
+import PublishButton from '@/components/PublishButton'
 
 const SOURCE_LABELS: Record<SourceType, string> = {
   book: '本', youtube: 'YouTube', web: 'Web', other: 'その他',
@@ -57,7 +58,18 @@ function ItemFields({ value, onChange, onSubmit, onCancel, submitLabel }: {
   )
 }
 
-export default function ItemTable({ shelf, items, allShelves }: { shelf: Shelf; items: Item[]; allShelves: Shelf[] }) {
+export default function ItemTable({
+  shelf,
+  items,
+  allShelves,
+  defaultAuthor,
+}: {
+  shelf: Shelf
+  items: (Item & { quiz_count: number })[]
+  allShelves: Shelf[]
+  defaultAuthor: string
+}) {
+  const quizCount = items.reduce((n, i) => n + i.quiz_count, 0)
   const router = useRouter()
   const supabase = createClient()
   const [showForm, setShowForm] = useState(false)
@@ -117,9 +129,28 @@ export default function ItemTable({ shelf, items, allShelves }: { shelf: Shelf; 
 
   return (
     <section>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h1 className="text-xl font-bold text-gray-900">{shelf.name}</h1>
-        <button onClick={() => setShowForm(v => !v)} className={btn.primary}>＋ アイテムを追加</button>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold text-gray-900">{shelf.name}</h1>
+          <p className="text-xs text-gray-500">アイテム {items.length} ・ クイズ {quizCount}問</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {quizCount > 0 && (
+            <>
+              <Link href={`/dashboard/study?shelf=${shelf.id}`} className={btn.primary}>📖 この本棚を学習</Link>
+              <Link href={`/dashboard/quiz?shelf=${shelf.id}`} className={btn.secondary}>🎮 遊ぶ</Link>
+              <PublishButton
+                source={{ kind: 'shelf', id: shelf.id }}
+                name={shelf.name}
+                quizCount={quizCount}
+                isPublic={!!shelf.is_public}
+                authorName={shelf.author_name ?? null}
+                defaultAuthor={defaultAuthor}
+              />
+            </>
+          )}
+          <button onClick={() => setShowForm(v => !v)} className={btn.secondary}>＋ アイテムを追加</button>
+        </div>
       </div>
 
       {showForm && (
@@ -142,9 +173,17 @@ export default function ItemTable({ shelf, items, allShelves }: { shelf: Shelf; 
                 {SOURCE_ICONS[item.source_type]} {SOURCE_LABELS[item.source_type]}
               </span>
               <Link href={`/dashboard/${shelf.id}/${item.id}`} className="min-w-0 flex-1">
-                <div className="truncate font-medium text-gray-900 group-hover:text-indigo-700">{item.title}</div>
+                <div className="truncate font-medium text-gray-900 group-hover:text-indigo-700">
+                  {item.title}
+                  {(item.is_public || shelf.is_public) && <span className="ml-1.5 text-xs font-normal text-emerald-600" title="公開中">🌏</span>}
+                </div>
                 {item.author && <div className="truncate text-xs text-gray-500">{item.author}</div>}
               </Link>
+              {item.quiz_count > 0 && (
+                <Link href={`/dashboard/study?item=${item.id}`} className="text-xs text-indigo-600 hover:underline" title="このアイテムを学習">
+                  📖 学習
+                </Link>
+              )}
               {item.url && (
                 <a href={item.url} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 hover:underline">リンク ↗</a>
               )}
