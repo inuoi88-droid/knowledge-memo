@@ -93,7 +93,6 @@ export interface QuizProgress {
   wrong_count: number
   level: number
   last_result: boolean | null
-  last_answered_at: string | null
   due_at: string | null
   introduced_at: string | null
 }

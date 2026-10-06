@@ -1,6 +1,7 @@
 import { createClient, getUser } from '@/lib/supabase/server'
-import { fetchMyProgress, fetchMyQuizzes, fetchMyShelfTree, fetchPublicSources } from '@/lib/supabase/queries'
+import { fetchMyProgress, fetchMyQuizMeta, fetchMyShelfTree, fetchPublicSources } from '@/lib/supabase/queries'
 import { scopeFromParams } from '@/lib/scope'
+import { packProgress, packQuizzes } from '@/lib/quizPack'
 import { getNow } from '@/lib/stage'
 import QuizHub, { type HubTab } from '@/components/quiz/QuizHub'
 import { MODES } from '@/lib/play'
@@ -15,7 +16,7 @@ export default async function QuizPage({
   const user = (await getUser())!
 
   const [quizzes, progress, tree, publicSources] = await Promise.all([
-    fetchMyQuizzes(supabase, user.id),
+    fetchMyQuizMeta(supabase, user.id),
     fetchMyProgress(supabase, user.id),
     fetchMyShelfTree(supabase, user.id),
     fetchPublicSources(supabase),
@@ -26,14 +27,14 @@ export default async function QuizPage({
 
   return (
     <QuizHub
-      quizzes={quizzes}
+      quizzes={packQuizzes(quizzes)}
       tree={tree}
       publicSources={publicSources}
       initialScope={scopeFromParams(sp)}
       initialGenre={sp.genre ?? null}
       initialTab={initialTab}
       initialMode={initialMode}
-      progress={progress}
+      progress={packProgress(progress)}
       nowMs={getNow()}
     />
   )

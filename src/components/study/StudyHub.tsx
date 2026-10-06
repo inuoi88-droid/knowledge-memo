@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import type { OwnQuiz, PlaySessionRecord, QuizProgress, QuizWithSource, ShelfNode } from '@/types'
+import type { PlaySessionRecord, QuizWithSource, ShelfNode } from '@/types'
 import { shuffle } from '@/lib/quiz'
 import { MODES, RULES } from '@/lib/play'
 import {
@@ -13,6 +13,8 @@ import {
 import { attachSources, inScope, normalizeScope, scopeLabel, type Scope } from '@/lib/scope'
 import { formatMinute, type ReminderSettings } from '@/lib/reminders'
 import { unlockSound } from '@/lib/sound'
+import { unpackProgress, unpackQuizzes, type PackedProgress, type PackedQuizzes } from '@/lib/quizPack'
+import { useQuizTexts, withText } from '@/lib/quizText'
 import { btn, card } from '@/lib/ui'
 import ScopePicker, { countByItem, quizTree } from '@/components/ScopePicker'
 import StudySession, { STUDY_STEPS } from './StudySession'
@@ -46,8 +48,8 @@ function sessionModeLabel(mode: string, rule: string) {
 interface SessionState { key: number; title: string; reviews: QuizWithSource[]; fresh: QuizWithSource[]; seen: string[] }
 
 export default function StudyHub({
-  quizzes: ownQuizzes,
-  progress,
+  quizzes: packed,
+  progress: packedProgress,
   sessions,
   nowMs,
   settings,
@@ -56,8 +58,8 @@ export default function StudyHub({
   reminder,
   initialNotify,
 }: {
-  quizzes: OwnQuiz[]
-  progress: QuizProgress[]
+  quizzes: PackedQuizzes
+  progress: PackedProgress
   sessions: PlaySessionRecord[]
   nowMs: number
   settings: StudySettings
@@ -70,7 +72,11 @@ export default function StudyHub({
   const [editingReminder, setEditingReminder] = useState(initialNotify)
   const reminderOn = reminder.settings.pushEnabled || reminder.settings.emailEnabled
   // 何千問にもなるので、問題の一覧から作るものは入力が変わったときだけ計算し直す
-  const quizzes = useMemo(() => attachSources(ownQuizzes, tree), [ownQuizzes, tree])
+  // 問題文・解説はまだ入っていない。学習を始めるときに出す問題の分だけ読み込む
+  const quizzes = useMemo(() => attachSources(unpackQuizzes(packed), tree), [packed, tree])
+  const progress = useMemo(() => unpackProgress(packedProgress), [packedProgress])
+  const { ensure } = useQuizTexts()
+  const [preparing, setPreparing] = useState(false)
   const counts = useMemo(() => countByItem(quizzes), [quizzes])
   const qTree = useMemo(() => quizTree(tree, counts), [tree, counts])
   const [scope, setScope] = useState<Scope>(() => normalizeScope(initialScope ?? settings.scope, qTree))
@@ -131,11 +137,28 @@ export default function StudyHub({
     return ordered.slice(0, n)
   }
 
-  function start(fresh: QuizWithSource[], reviews: QuizWithSource[], seen: string[] = []) {
-    if (fresh.length + reviews.length === 0) return
+  async function start(fresh: QuizWithSource[], reviews: QuizWithSource[], seen: string[] = []) {
+    if (fresh.length + reviews.length === 0 || preparing) return
+    // 音の準備はタップの直後にしかできないので、読み込みを待つ前にしておく
     unlockSound()
+    setPreparing(true)
+    let texts
+    try {
+      texts = await ensure([...fresh, ...reviews].map(q => q.id))
+    } catch {
+      alert('問題を読み込めませんでした。通信の状態を確かめて、もう一度お試しください。')
+      return
+    } finally {
+      setPreparing(false)
+    }
     if (initialScope) persist({})
-    setSession(s => ({ key: (s?.key ?? 0) + 1, title: label, reviews, fresh, seen: [...seen, ...fresh.map(q => q.id)] }))
+    setSession(s => ({
+      key: (s?.key ?? 0) + 1,
+      title: label,
+      reviews: reviews.map(q => withText(q, texts)),
+      fresh: fresh.map(q => withText(q, texts)),
+      seen: [...seen, ...fresh.map(q => q.id)],
+    }))
   }
 
   const reminderDialog = editingReminder && (
@@ -163,7 +186,7 @@ export default function StudyHub({
   const moreFor = (s: SessionState) => {
     const exclude = new Set(s.seen)
     const n = Math.min(settings.dailyNew, unseen.filter(q => !exclude.has(q.id)).length)
-    return n > 0 ? { label: `＋ もっと覚える（${n}問）`, onStart: () => start(pickFresh(n, exclude), [], s.seen) } : undefined
+    return n > 0 ? { label: preparing ? '読み込み中…' : `＋ もっと覚える（${n}問）`, onStart: () => void start(pickFresh(n, exclude), [], s.seen) } : undefined
   }
 
   return (
@@ -237,10 +260,11 @@ export default function StudyHub({
                 ))}
               </ol>
               <button
-                onClick={() => start(pickFresh(planNew), dueScoped.slice(0, REVIEW_CAP))}
+                onClick={() => void start(pickFresh(planNew), dueScoped.slice(0, REVIEW_CAP))}
+                disabled={preparing}
                 className="rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 py-4 text-xl font-black text-white shadow-lg transition-transform hover:scale-[1.01] active:scale-[0.99]"
               >
-                <span className="block">▶ 今日の学習をはじめる</span>
+                <span className="block">{preparing ? '読み込み中…' : '▶ 今日の学習をはじめる'}</span>
                 <span className="block text-xs font-bold opacity-80">目安 約{minutes}分</span>
               </button>
               {dueScoped.length > REVIEW_CAP && (
@@ -258,7 +282,7 @@ export default function StudyHub({
                 {tomorrow > 0 ? `明日は復習が ${tomorrow}問 あります。` : 'また明日、復習の時期が来た問題が出てきます。'}
               </p>
               {unseen.length > 0 && (
-                <button onClick={() => start(pickFresh(settings.dailyNew), [])} className="mt-1 rounded-xl bg-white px-4 py-2 text-sm font-bold text-indigo-700 shadow-sm ring-1 ring-indigo-100 hover:bg-indigo-50">
+                <button onClick={() => void start(pickFresh(settings.dailyNew), [])} disabled={preparing} className="mt-1 rounded-xl bg-white px-4 py-2 text-sm font-bold text-indigo-700 shadow-sm ring-1 ring-indigo-100 hover:bg-indigo-50">
                   ＋ もっと覚える（{Math.min(settings.dailyNew, unseen.length)}問）
                 </button>
               )}
