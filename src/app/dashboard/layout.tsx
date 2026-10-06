@@ -8,7 +8,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <div className="min-h-screen flex flex-col">
-      <TopBar user={user} />
+      <TopBar user={user} showTutorial={!user.user_metadata?.tutorial_done} />
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-20">
         {children}
       </main>

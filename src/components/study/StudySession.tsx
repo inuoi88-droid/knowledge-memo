@@ -29,9 +29,8 @@ interface StudyItem {
   fresh: boolean
 }
 
-// 新しい問題は5問ずつ「カードで覚える → 書いて確かめる」をくり返す
-const CHUNK = 5
-// やり直しの問題がすぐ続けて出ないよう、残りがこれより少なくなったら次の5問を足す
+// 新しい問題は、まず全部カードで見てから、まとめて書いて確かめる。
+// 復習の残りがこれより少なくなったら新しい問題を足す（やり直しの問題がすぐ続けて出ないように）
 const MIN_QUEUE = 3
 // 同じ問題は3巡までくり返し出す（それでもダメなら「もう少し」として次回へ）
 const MAX_TRIES = 3
@@ -45,10 +44,9 @@ function chunkItems(quizzes: readonly Quiz[], repeats: number): StudyItem[] {
 
 interface Plan { queue: StudyItem[]; backlog: Quiz[] }
 
-// 今の山が残り少なくなったら、次の新しい問題を5問足す
 function refill(queue: StudyItem[], backlog: Quiz[], repeats: number): Plan {
   if (queue.length >= MIN_QUEUE || backlog.length === 0) return { queue, backlog }
-  return { queue: [...queue, ...chunkItems(backlog.slice(0, CHUNK), repeats)], backlog: backlog.slice(CHUNK) }
+  return { queue: [...queue, ...chunkItems(backlog, repeats)], backlog: [] }
 }
 
 type Outcome = 'correct' | 'wrong'
@@ -79,6 +77,7 @@ export default function StudySession({
   const [given, setGiven] = useState<string | null>(null)
   const [typed, setTyped] = useState('')
   const [stats, setStats] = useState({ reviewOk: 0, reviewMissed: 0, learned: 0, relearned: 0, givenUp: 0 })
+  const [cardsSeen, setCardsSeen] = useState(0)
   const [attempts, setAttempts] = useState({ correct: 0, total: 0 })
   const [finishedAt, setFinishedAt] = useState<number | null>(null)
   const [startedAt] = useState(perfNow)
@@ -179,6 +178,7 @@ export default function StudySession({
   function nextLearn() {
     if (!item || item.step !== 'learn') return
     sfx.tap()
+    setCardsSeen(n => n + 1)
     moveOn(plan.queue.slice(1))
   }
 
@@ -287,7 +287,7 @@ export default function StudySession({
                     {item.step === 'learn' ? '📖 覚える' : item.step === 'review' ? `🔁 復習${typing ? '' : '（めくる）'}` : '✍️ 書いて確かめる'}
                     {item.tries > 0 && ' ・ やり直し'}
                   </span>
-                  {item.step === 'learn' && <span className="text-xs font-bold text-amber-600">NEW</span>}
+                  {item.step === 'learn' && <span className="text-xs font-bold text-amber-600">NEW {cardsSeen + 1} / {fresh.length}</span>}
                   {item.step === 'check' && repeats > 1 && (
                     <span className="flex items-center gap-1" title={`${repeats}回正しく書けたら合格`}>
                       {Array.from({ length: repeats }, (_, i) => (
@@ -302,7 +302,11 @@ export default function StudySession({
               {quiz.image_url && <QuizImage src={quiz.image_url} className="mx-auto mb-4 max-h-60 rounded-xl object-contain" />}
               <p className="whitespace-pre-wrap text-xl font-bold leading-relaxed sm:text-2xl">{quiz.question}</p>
               {item.step === 'learn' && (
-                <p className="mt-3 text-xs text-gray-400">答えを覚えたら次へ。このあと何問かはさんで、書いて確かめます。</p>
+                <p className="mt-3 text-xs text-gray-400">
+                  {cardsSeen + 1 < fresh.length
+                    ? `答えを覚えたら次へ。新しい問題を全部（${fresh.length}問）見たら、まとめて書いて確かめます。`
+                    : 'これで新しい問題は全部です。次から、答えを書いて確かめます。'}
+                </p>
               )}
             </div>
 

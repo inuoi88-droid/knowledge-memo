@@ -284,3 +284,90 @@ create or replace function public.list_public_quiz_sources()
 $fn$;
 revoke all on function public.list_public_quiz_sources() from public;
 grant execute on function public.list_public_quiz_sources() to anon, authenticated;
+-- ▼ 毎日の通知（プッシュ通知・メール）
+-- （本番DBには migration「daily_reminders」「daily_reminders_cron」として適用済み。
+--   送信は Edge Function「reminders」（supabase/functions/reminders）。メールは Edge Function のシークレット RESEND_API_KEY があるときだけ）
+create table if not exists public.reminder_settings (
+  user_id uuid primary key default auth.uid() references auth.users on delete cascade,
+  push_enabled boolean not null default false,
+  email_enabled boolean not null default false,
+  -- 通知する時刻（日本時間・0時からの分。15分きざみ）
+  remind_minute smallint not null default 1200 check (remind_minute between 0 and 1425 and remind_minute % 15 = 0),
+  -- 最後に通知した日（日本時間）。1日1回だけ送る
+  last_sent_on date,
+  updated_at timestamptz not null default now()
+);
+alter table public.reminder_settings enable row level security;
+create policy "Own reminder settings" on public.reminder_settings for all to authenticated
+  using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+
+-- プッシュ通知を受け取る端末（ブラウザ）
+create table if not exists public.push_subscriptions (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  endpoint text not null,
+  p256dh text not null,
+  auth text not null,
+  user_agent text,
+  created_at timestamptz not null default now(),
+  unique (user_id, endpoint)
+);
+alter table public.push_subscriptions enable row level security;
+create policy "Own push subscriptions" on public.push_subscriptions for all to authenticated
+  using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+
+-- 通知用の鍵など（RLS だけ有効でポリシーなし＝サーバーの関数からしか読めない）
+-- プッシュ通知の VAPID 鍵は、Edge Function がはじめて呼ばれたときに作って key='vapid' に保存する
+create table if not exists public.app_secrets (
+  key text primary key,
+  value jsonb not null,
+  created_at timestamptz not null default now()
+);
+alter table public.app_secrets enable row level security;
+revoke all on table public.app_secrets from anon, authenticated;
+
+-- 通知の時刻が来た人を取り出し、今日は送ったことにする（Edge Function だけが呼ぶ）
+create or replace function public.claim_due_reminders()
+  returns table (user_id uuid, email text, push_enabled boolean, email_enabled boolean, due_count bigint, new_left bigint)
+  language sql security definer set search_path = '' as $fn$
+  with t as (
+    select (now() at time zone 'Asia/Tokyo')::date as today,
+      (extract(hour from now() at time zone 'Asia/Tokyo') * 60 + extract(minute from now() at time zone 'Asia/Tokyo'))::int as minute_now,
+      date_bin('1 day', now(), timestamptz '2000-01-01 04:00:00+09') as study_day
+  ), claimed as (
+    update public.reminder_settings r set last_sent_on = t.today
+    from t
+    where (r.push_enabled or r.email_enabled)
+      and r.remind_minute <= t.minute_now
+      and (r.last_sent_on is null or r.last_sent_on < t.today)
+    returning r.user_id, r.push_enabled, r.email_enabled
+  )
+  select c.user_id, u.email::text, c.push_enabled, c.email_enabled,
+    (select count(*) from public.quiz_progress p where p.user_id = c.user_id and p.due_at <= now()),
+    greatest(0, least(
+      coalesce((select s.daily_new from public.study_settings s where s.user_id = c.user_id), 10)
+        - (select count(*) from public.quiz_progress p, t where p.user_id = c.user_id and p.introduced_at >= t.study_day),
+      (select count(*) from public.memos m where m.user_id = c.user_id and m.type = 'qa'
+        and not exists (select 1 from public.quiz_progress p where p.user_id = c.user_id and p.memo_id = m.id))
+    ))
+  from claimed c join auth.users u on u.id = c.user_id
+$fn$;
+revoke all on function public.claim_due_reminders() from public, anon, authenticated;
+grant execute on function public.claim_due_reminders() to service_role;
+
+-- 15分ごとに通知の Edge Function を呼ぶ（送る相手がいなければ何もしない。1人1日1回まで）
+-- Authorization は公開用の anon キー（フロントにも入っている秘密ではないキー）
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+select cron.schedule(
+  'daily-reminders',
+  '*/15 * * * *',
+  $job$
+  select net.http_post(
+    url := 'https://<project-ref>.supabase.co/functions/v1/reminders',
+    headers := jsonb_build_object('Content-Type', 'application/json', 'Authorization', 'Bearer <anon key>'),
+    body := '{"action":"cron"}'::jsonb,
+    timeout_milliseconds := 30000
+  )
+  $job$
+);

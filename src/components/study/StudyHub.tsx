@@ -11,11 +11,13 @@ import {
   type Mastery, type NewOrder, type StudySettings,
 } from '@/lib/progress'
 import { inScope, normalizeScope, scopeLabel, type Scope } from '@/lib/scope'
+import { formatMinute, type ReminderSettings } from '@/lib/reminders'
 import { unlockSound } from '@/lib/sound'
-import { card } from '@/lib/ui'
+import { btn, card } from '@/lib/ui'
 import ScopePicker, { countByItem, quizTree } from '@/components/ScopePicker'
 import StudySession, { STUDY_STEPS } from './StudySession'
 import StudySettingsDialog from './StudySettingsDialog'
+import ReminderDialog from './ReminderDialog'
 
 // 1回の学習で出す復習の上限（たまっていたら何回かに分ける）
 const REVIEW_CAP = 100
@@ -51,6 +53,8 @@ export default function StudyHub({
   settings,
   tree,
   initialScope,
+  reminder,
+  initialNotify,
 }: {
   quizzes: QuizWithSource[]
   progress: QuizProgress[]
@@ -59,8 +63,12 @@ export default function StudyHub({
   settings: StudySettings
   tree: ShelfNode[]
   initialScope: Scope | null
+  reminder: { settings: ReminderSettings; deviceCount: number; email: string | null }
+  initialNotify: boolean
 }) {
   const router = useRouter()
+  const [editingReminder, setEditingReminder] = useState(initialNotify)
+  const reminderOn = reminder.settings.pushEnabled || reminder.settings.emailEnabled
   const counts = countByItem(quizzes)
   const qTree = quizTree(tree, counts)
   const [scope, setScope] = useState<Scope>(() => normalizeScope(initialScope ?? settings.scope, qTree))
@@ -116,10 +124,24 @@ export default function StudyHub({
     setSession(s => ({ key: (s?.key ?? 0) + 1, title: label, reviews, fresh, seen: [...seen, ...fresh.map(q => q.id)] }))
   }
 
+  const reminderDialog = editingReminder && (
+    <ReminderDialog
+      value={reminder.settings}
+      deviceCount={reminder.deviceCount}
+      email={reminder.email}
+      onClose={() => setEditingReminder(false)}
+      onSaved={() => { setEditingReminder(false); router.refresh() }}
+    />
+  )
+
   if (quizzes.length === 0) {
     return (
       <div className={`${card} p-10 text-center text-sm text-gray-500`}>
         まだクイズがありません。<Link href="/dashboard" className="text-indigo-600 hover:underline">本棚</Link>のアイテムを開いて、クイズを追加しましょう。
+        <div className="mt-4">
+          <button onClick={() => setEditingReminder(true)} className={btn.secondary}>🔔 毎日の通知を設定する</button>
+        </div>
+        {reminderDialog}
       </div>
     )
   }
@@ -137,14 +159,31 @@ export default function StudyHub({
           <h1 className="text-xl font-black text-gray-900">📖 学習</h1>
           <p className="mt-0.5 text-sm text-gray-500">毎日「今日の学習」を1回やるだけ。復習と新しい問題を、ちょうどいい量で出します。</p>
         </div>
-        <button
-          onClick={() => setEditingSettings(true)}
-          className="rounded-xl border-2 border-gray-100 bg-white px-3 py-2 text-left text-xs text-gray-600 transition-colors hover:border-indigo-200"
-        >
-          <span className="font-bold text-gray-900">⚙️ 学習の設定</span>
-          <span className="ml-2">1日{settings.dailyNew}問 ・ 書く{settings.checkRepeats}回 ・ 間隔 {settings.reviewDays.map(formatDays).join('→')}</span>
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setEditingReminder(true)}
+            className={`rounded-xl border-2 px-3 py-2 text-left text-xs transition-colors ${reminderOn ? 'border-gray-100 bg-white text-gray-600 hover:border-indigo-200' : 'border-amber-200 bg-amber-50 text-amber-800 hover:border-amber-300'}`}
+          >
+            <span className="font-bold text-gray-900">🔔 通知</span>
+            <span className="ml-2">{reminderOn ? `毎日 ${formatMinute(reminder.settings.remindMinute)}` : 'オフ'}</span>
+          </button>
+          <button
+            onClick={() => setEditingSettings(true)}
+            className="rounded-xl border-2 border-gray-100 bg-white px-3 py-2 text-left text-xs text-gray-600 transition-colors hover:border-indigo-200"
+          >
+            <span className="font-bold text-gray-900">⚙️ 学習の設定</span>
+            <span className="ml-2">1日{settings.dailyNew}問 ・ 書く{settings.checkRepeats}回 ・ 間隔 {settings.reviewDays.map(formatDays).join('→')}</span>
+          </button>
+        </div>
       </div>
+
+      {!reminderOn && (
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span className="text-xl">🔔</span>
+          <span className="min-w-0 flex-1">毎日決まった時刻に「今日の学習」をお知らせできます。続けるいちばんのコツです。</span>
+          <button onClick={() => setEditingReminder(true)} className={btn.primary}>通知を設定する</button>
+        </div>
+      )}
 
       <section className="rounded-3xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 p-[3px] shadow-lg">
         <div className="flex flex-col gap-4 rounded-[21px] bg-white p-4 sm:p-6">
@@ -171,8 +210,8 @@ export default function StudyHub({
               <ol className="grid gap-2 sm:grid-cols-3">
                 {([
                   ['review', planReview > 0 ? `${planReview}問` : 'なし', '前に覚えた問題を思い出す'],
-                  ['learn', planNew > 0 ? `${planNew}問` : 'なし', '新しい問題の答えを見て覚える'],
-                  ['check', planNew > 0 ? `1問${settings.checkRepeats}回` : '—', 'すぐに答えを書いて身につける'],
+                  ['learn', planNew > 0 ? `${planNew}問` : 'なし', '新しい問題の答えを、まず全部見て覚える'],
+                  ['check', planNew > 0 ? `1問${settings.checkRepeats}回` : '—', '全部見たら、答えを書いて身につける'],
                 ] as const).map(([s, v, d], i) => (
                   <li key={s} className={`flex items-center gap-3 rounded-xl bg-white px-3 py-2.5 ${(s === 'review' ? planReview : planNew) === 0 ? 'opacity-50' : ''}`}>
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-sm font-black text-white">{i + 1}</span>
@@ -328,6 +367,7 @@ export default function StudyHub({
           onClose={() => { setSession(null); router.refresh() }}
         />
       )}
+      {reminderDialog}
       {editingSettings && (
         <StudySettingsDialog
           value={current}

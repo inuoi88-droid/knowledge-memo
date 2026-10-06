@@ -1,9 +1,11 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
+import Tutorial from './Tutorial'
 
 const TABS = [
   { href: '/dashboard', label: '本棚', icon: '📚', isActive: (p: string) => !p.startsWith('/dashboard/quiz') && !p.startsWith('/dashboard/study') },
@@ -11,9 +13,10 @@ const TABS = [
   { href: '/dashboard/study', label: '学習', icon: '📖', isActive: (p: string) => p.startsWith('/dashboard/study') },
 ]
 
-export default function TopBar({ user }: { user: User }) {
+export default function TopBar({ user, showTutorial }: { user: User; showTutorial: boolean }) {
   const router = useRouter()
   const pathname = usePathname()
+  const [tutorial, setTutorial] = useState(showTutorial)
 
   async function signOut() {
     await createClient().auth.signOut()
@@ -44,13 +47,17 @@ export default function TopBar({ user }: { user: User }) {
             )
           })}
         </nav>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-1 sm:gap-3">
           <span className="hidden max-w-48 truncate text-xs text-gray-400 md:inline">{user.email}</span>
+          <button onClick={() => setTutorial(true)} className="whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800" title="使い方を見る">
+            ❓<span className="hidden sm:inline"> 使い方</span>
+          </button>
           <button onClick={signOut} className="whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800">
             ログアウト
           </button>
         </div>
       </div>
+      {tutorial && <Tutorial onClose={() => setTutorial(false)} />}
     </header>
   )
 }
