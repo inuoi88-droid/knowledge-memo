@@ -1,16 +1,16 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import type { PlaySessionRecord, QuizProgress, QuizWithSource, ShelfNode } from '@/types'
+import type { OwnQuiz, PlaySessionRecord, QuizProgress, QuizWithSource, ShelfNode } from '@/types'
 import { shuffle } from '@/lib/quiz'
 import { MODES, RULES } from '@/lib/play'
 import {
   MASTERY, MASTERY_ORDER, countIntroducedToday, countMastery, formatDays, isDue, saveStudySettings, studyDayStart,
   type Mastery, type NewOrder, type StudySettings,
 } from '@/lib/progress'
-import { inScope, normalizeScope, scopeLabel, type Scope } from '@/lib/scope'
+import { attachSources, inScope, normalizeScope, scopeLabel, type Scope } from '@/lib/scope'
 import { formatMinute, type ReminderSettings } from '@/lib/reminders'
 import { unlockSound } from '@/lib/sound'
 import { btn, card } from '@/lib/ui'
@@ -46,7 +46,7 @@ function sessionModeLabel(mode: string, rule: string) {
 interface SessionState { key: number; title: string; reviews: QuizWithSource[]; fresh: QuizWithSource[]; seen: string[] }
 
 export default function StudyHub({
-  quizzes,
+  quizzes: ownQuizzes,
   progress,
   sessions,
   nowMs,
@@ -56,7 +56,7 @@ export default function StudyHub({
   reminder,
   initialNotify,
 }: {
-  quizzes: QuizWithSource[]
+  quizzes: OwnQuiz[]
   progress: QuizProgress[]
   sessions: PlaySessionRecord[]
   nowMs: number
@@ -69,8 +69,10 @@ export default function StudyHub({
   const router = useRouter()
   const [editingReminder, setEditingReminder] = useState(initialNotify)
   const reminderOn = reminder.settings.pushEnabled || reminder.settings.emailEnabled
-  const counts = countByItem(quizzes)
-  const qTree = quizTree(tree, counts)
+  // 何千問にもなるので、問題の一覧から作るものは入力が変わったときだけ計算し直す
+  const quizzes = useMemo(() => attachSources(ownQuizzes, tree), [ownQuizzes, tree])
+  const counts = useMemo(() => countByItem(quizzes), [quizzes])
+  const qTree = useMemo(() => quizTree(tree, counts), [tree, counts])
   const [scope, setScope] = useState<Scope>(() => normalizeScope(initialScope ?? settings.scope, qTree))
   const [order, setOrder] = useState<NewOrder>(settings.newOrder)
   const [editingSettings, setEditingSettings] = useState(false)
@@ -78,7 +80,19 @@ export default function StudyHub({
   const current: StudySettings = { ...settings, scope, newOrder: order }
   const steps = settings.reviewDays.length
 
-  const progressMap = new Map(progress.map(p => [p.memo_id, p]))
+  const progressMap = useMemo(() => new Map(progress.map(p => [p.memo_id, p])), [progress])
+  // 本棚ごと・アイテムごとの問題（進み具合の表示用）。毎回全問を本棚の数だけ調べ直さないよう、まとめて分けておく
+  const idsBySource = useMemo(() => {
+    const m = new Map<string, string[]>()
+    const add = (key: string | null, id: string) => {
+      if (!key) return
+      const list = m.get(key)
+      if (list) list.push(id)
+      else m.set(key, [id])
+    }
+    for (const q of quizzes) { add(q.shelf_id, q.id); add(q.item_id, q.id) }
+    return m
+  }, [quizzes])
   const dueAt = (q: QuizWithSource) => Date.parse(progressMap.get(q.id)?.due_at ?? '')
   const scoped = quizzes.filter(q => inScope(q, scope))
   const dueScoped = scoped.filter(q => isDue(progressMap.get(q.id), nowMs)).sort((a, b) => dueAt(a) - dueAt(b))
@@ -289,7 +303,7 @@ export default function StudyHub({
           <h2 className="mb-3 text-sm font-black text-gray-900">本棚ごとの進み具合</h2>
           <ul className="flex flex-col gap-3">
             {qTree.map(s => {
-              const ids = quizzes.filter(q => q.shelf_id === s.id).map(q => q.id)
+              const ids = idsBySource.get(s.id) ?? []
               const c = countMastery(ids, progressMap, steps)
               return (
                 <li key={s.id}>
@@ -305,7 +319,7 @@ export default function StudyHub({
                   {s.items.length > 1 && (
                     <ul className="mt-1.5 flex flex-col gap-1 pl-4">
                       {s.items.map(i => {
-                        const iids = quizzes.filter(q => q.item_id === i.id).map(q => q.id)
+                        const iids = idsBySource.get(i.id) ?? []
                         const ic = countMastery(iids, progressMap, steps)
                         return (
                           <li key={i.id}>

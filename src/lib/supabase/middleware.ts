@@ -21,7 +21,10 @@ export async function updateSession(request: NextRequest) {
     }
   )
 
-  const { data: { user } } = await supabase.auth.getUser()
+  // getClaims はトークンの署名を手元で確かめる（期限切れならここで更新する）。
+  // getUser と違い、毎回 Supabase Auth まで問い合わせに行かないので速い
+  const { data } = await supabase.auth.getClaims()
+  const user = data?.claims
 
   // /quiz 以下（共有セット・早押しルーム）はログインなしでも見られるようにする
   if (!user && request.nextUrl.pathname.startsWith('/dashboard')) {

@@ -1,14 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useDeferredValue, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import type { PublicSource, Quiz, QuizProgress, QuizWithSource, ShelfNode } from '@/types'
+import type { OwnQuiz, PublicSource, Quiz, QuizProgress, ShelfNode } from '@/types'
 import { useDensity } from '@/lib/density'
 import { countTags } from '@/lib/quiz'
 import { DEFAULT_CONFIG, modeAvailability, startSession, type PlayConfig, type PlayMode, type Session } from '@/lib/play'
 import { isDue, isWeak } from '@/lib/progress'
-import { ALL_SCOPE, inScope, isAllScope, normalizeScope, scopeLabel, sourceHref, type Scope } from '@/lib/scope'
+import { ALL_SCOPE, attachSources, inScope, isAllScope, normalizeScope, scopeLabel, sourceHref, type Scope } from '@/lib/scope'
 import { unlockSound } from '@/lib/sound'
 import { generateRoomCode, roomUrl, stashLocalRoomQuizzes } from '@/lib/room'
 import { btn, card } from '@/lib/ui'
@@ -23,7 +23,7 @@ export type HubTab = 'play' | 'list' | 'public'
 const PAGE = 100
 
 export default function QuizHub({
-  quizzes,
+  quizzes: ownQuizzes,
   tree,
   publicSources,
   initialScope,
@@ -33,7 +33,7 @@ export default function QuizHub({
   progress,
   nowMs,
 }: {
-  quizzes: QuizWithSource[]
+  quizzes: OwnQuiz[]
   tree: ShelfNode[]
   publicSources: PublicSource[]
   initialScope: Scope | null
@@ -47,8 +47,10 @@ export default function QuizHub({
   const density = useDensity()
   const [tab, setTab] = useState<HubTab>(initialTab)
 
-  const counts = countByItem(quizzes)
-  const qTree = quizTree(tree, counts)
+  // 何千問にもなるので、問題の一覧から作るものは入力が変わったときだけ計算し直す
+  const quizzes = useMemo(() => attachSources(ownQuizzes, tree), [ownQuizzes, tree])
+  const counts = useMemo(() => countByItem(quizzes), [quizzes])
+  const qTree = useMemo(() => quizTree(tree, counts), [tree, counts])
   const [scope, setScope] = useState<Scope>(() => normalizeScope(initialScope ?? ALL_SCOPE, qTree))
   const [showFilters, setShowFilters] = useState(!!initialGenre)
   const [genres, setGenres] = useState<string[]>(initialGenre ? [initialGenre] : [])
@@ -63,12 +65,14 @@ export default function QuizHub({
   const [playConfig, setPlayConfig] = useState<PlayConfig>({ ...DEFAULT_CONFIG, mode: initialMode ?? DEFAULT_CONFIG.mode })
   const [stage, setStage] = useState<{ pool: Quiz[]; title: string; session?: Session } | null>(null)
 
-  const progressMap = new Map(progress.map(p => [p.memo_id, p]))
-  const scoped = quizzes.filter(q => inScope(q, scope))
-  const tagCounts = countTags(scoped)
+  const progressMap = useMemo(() => new Map(progress.map(p => [p.memo_id, p])), [progress])
+  const scoped = useMemo(() => quizzes.filter(q => inScope(q, scope)), [quizzes, scope])
+  const tagCounts = useMemo(() => countTags(scoped), [scoped])
 
-  const kw = keyword.trim().toLowerCase()
-  const filtered = scoped.filter(q => {
+  // 入力のたびに全問を検索し直すと文字入力が重くなるので、検索は入力より少し遅れてよい
+  const deferredKeyword = useDeferredValue(keyword)
+  const kw = deferredKeyword.trim().toLowerCase()
+  const filtered = useMemo(() => scoped.filter(q => {
     if (genres.length > 0) {
       const hit = matchAll ? genres.every(g => q.tags.includes(g)) : genres.some(g => q.tags.includes(g))
       if (!hit) return false
@@ -81,7 +85,7 @@ export default function QuizHub({
     }
     if (kw && ![q.question, q.answer, q.explanation ?? ''].some(s => s.toLowerCase().includes(kw))) return false
     return true
-  })
+  }), [scoped, genres, matchAll, levels, statuses, progressMap, nowMs, kw])
 
   const filterCount = genres.length + levels.length + statuses.length
   const conditionLabel = [

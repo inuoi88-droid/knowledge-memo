@@ -1,4 +1,4 @@
-import type { QuizSource, ShelfNode } from '@/types'
+import type { OwnQuiz, QuizSource, QuizWithSource, ShelfNode } from '@/types'
 
 // 学習・クイズの範囲。本棚を丸ごと選ぶか、アイテムを1つずつ選ぶ。どちらも空なら全部
 export interface Scope {
@@ -10,6 +10,16 @@ export const ALL_SCOPE: Scope = { shelfIds: [], itemIds: [] }
 
 export function isAllScope(s: Scope): boolean {
   return s.shelfIds.length === 0 && s.itemIds.length === 0
+}
+
+// サーバーから受け取ったクイズに、本棚の一覧から本棚・アイテム名を付ける
+export function attachSources(quizzes: readonly OwnQuiz[], tree: readonly ShelfNode[]): QuizWithSource[] {
+  const items = new Map<string, { title: string; shelfId: string }>()
+  for (const s of tree) for (const i of s.items) items.set(i.id, { title: i.title, shelfId: s.id })
+  return quizzes.map(q => {
+    const item = items.get(q.item_id)
+    return { ...q, item_title: item?.title ?? null, shelf_id: item?.shelfId ?? null }
+  })
 }
 
 export function inScope(q: { shelf_id: string | null; item_id: string }, s: Scope): boolean {
