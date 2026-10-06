@@ -371,3 +371,24 @@ select cron.schedule(
   )
   $job$
 );
+-- ============================================================
+-- 公開判定を1回の問い合わせにつき1度だけ計算する（速度改善）
+-- item_is_public(item_id) のような行ごとの関数呼び出しは、security definer のため
+-- 展開されず1行ずつ実行され、自分の4,000問を読むだけで0.3秒以上かかっていた。
+-- 公開中の本棚・アイテムの ID を一度だけ求め、IN で照らし合わせる（読める範囲は同じ）
+-- ============================================================
+create or replace function private.public_shelf_ids() returns setof uuid
+  language sql stable security definer set search_path = ''
+  as $fn$ select s.id from public.shelves s where s.is_public $fn$;
+create or replace function private.public_item_ids() returns setof uuid
+  language sql stable security definer set search_path = ''
+  as $fn$ select i.id from public.items i join public.shelves s on s.id = i.shelf_id where i.is_public or s.is_public $fn$;
+revoke all on function private.public_shelf_ids() from public;
+revoke all on function private.public_item_ids() from public;
+grant execute on function private.public_shelf_ids() to anon, authenticated;
+grant execute on function private.public_item_ids() to anon, authenticated;
+
+alter policy "Public items are readable" on public.items
+  using (is_public or shelf_id in (select private.public_shelf_ids()));
+alter policy "Quizzes in public items are readable" on public.memos
+  using (type = 'qa' and item_id in (select private.public_item_ids()));
