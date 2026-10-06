@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -22,6 +22,8 @@ const NOTE_STYLE: Record<Exclude<MemoType, 'qa'>, { bar: string; badge: string }
 }
 
 type Filter = 'all' | MemoType
+// 千問を超えるアイテムもあるので、一度に描くのはこの件数まで（スマホで重くならないように）
+const PAGE = 100
 
 export default function MemoDetail({
   item,
@@ -37,18 +39,32 @@ export default function MemoDetail({
   const router = useRouter()
   const density = useDensity()
 
-  const [filter, setFilter] = useState<Filter>('all')
-  const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [filter, setFilterState] = useState<Filter>('all')
+  const [activeTag, setActiveTagState] = useState<string | null>(null)
+  const [shownQuizzes, setShownQuizzes] = useState(PAGE)
+  const [shownNotes, setShownNotes] = useState(PAGE)
   const [revealAll, setRevealAll] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [playGenre, setPlayGenre] = useState('')
   const [playDifficulty, setPlayDifficulty] = useState('')
   const [playing, setPlaying] = useState<Quiz[] | null>(null)
 
-  const quizMemos = memos.filter(m => m.type === 'qa')
-  const noteMemos = memos.filter(m => m.type !== 'qa')
-  const allTags = countTags(memos)
-  const quizTags = countTags(quizMemos)
+  const quizMemos = useMemo(() => memos.filter(m => m.type === 'qa'), [memos])
+  const noteMemos = useMemo(() => memos.filter(m => m.type !== 'qa'), [memos])
+  const allTags = useMemo(() => countTags(memos), [memos])
+  const quizTags = useMemo(() => countTags(quizMemos), [quizMemos])
+
+  function setFilter(f: Filter) {
+    setFilterState(f)
+    setShownQuizzes(PAGE)
+    setShownNotes(PAGE)
+  }
+
+  function setActiveTag(t: string | null) {
+    setActiveTagState(t)
+    setShownQuizzes(PAGE)
+    setShownNotes(PAGE)
+  }
 
   const byTag = (m: Memo) => !activeTag || m.tags?.includes(activeTag)
   const visibleQuizzes = filter === 'all' || filter === 'qa' ? quizMemos.filter(byTag) : []
@@ -164,7 +180,7 @@ export default function MemoDetail({
             <span className="text-xs font-semibold text-indigo-700">クイズ {visibleQuizzes.length}問</span>
           </div>
           <div className="divide-y divide-gray-100">
-            {visibleQuizzes.map(m =>
+            {visibleQuizzes.slice(0, shownQuizzes).map(m =>
               editingId === m.id ? (
                 <EditMemoForm key={m.id} memo={m} onDone={() => setEditingId(null)} />
               ) : (
@@ -178,13 +194,18 @@ export default function MemoDetail({
                 />
               ),
             )}
+            {visibleQuizzes.length > shownQuizzes && (
+              <button onClick={() => setShownQuizzes(n => n + PAGE)} className="w-full py-3 text-sm text-indigo-600 hover:bg-indigo-50">
+                さらに表示（残り {visibleQuizzes.length - shownQuizzes}問）
+              </button>
+            )}
           </div>
         </section>
       )}
 
       {visibleNotes.length > 0 && (
         <section className="flex flex-col gap-2">
-          {visibleNotes.map(m => {
+          {visibleNotes.slice(0, shownNotes).map(m => {
             const style = NOTE_STYLE[m.type as Exclude<MemoType, 'qa'>]
             return editingId === m.id ? (
               <div key={m.id} className={`${card} overflow-hidden`}>
@@ -206,6 +227,11 @@ export default function MemoDetail({
               </div>
             )
           })}
+          {visibleNotes.length > shownNotes && (
+            <button onClick={() => setShownNotes(n => n + PAGE)} className={`${card} w-full py-3 text-sm text-indigo-600 hover:bg-indigo-50`}>
+              さらに表示（残り {visibleNotes.length - shownNotes}件）
+            </button>
+          )}
         </section>
       )}
 

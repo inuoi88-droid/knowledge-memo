@@ -1,44 +1,40 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { PublicSource, Quiz, QuizProgress, QuizSource, QuizWithSource, ShelfNode, SourceType } from '@/types'
+import type { PublicSource, Quiz, QuizProgress, QuizSource, ShelfNode, SourceType } from '@/types'
 import { toQuiz, uniqueTags } from '@/lib/quiz'
 import { fetchAll } from './fetchAll'
+import type { QuizMeta } from '@/lib/quizPack'
 
 const QUIZ_COLUMNS = 'id, question, answer, explanation, difficulty, tags, image_url'
 
-export async function fetchMyQuizzes(supabase: SupabaseClient, userId: string): Promise<QuizWithSource[]> {
+// 問題文・解説は送らない（出すときに useQuizTexts で読み込む）。
+// 本棚名・アイテム名は fetchMyShelfTree の結果から画面側で補う（attachSources）
+export async function fetchMyQuizMeta(supabase: SupabaseClient, userId: string): Promise<QuizMeta[]> {
   const rows = await fetchAll((from, to) =>
     supabase
       .from('memos')
-      .select(`${QUIZ_COLUMNS}, position, item_id, items(title, shelf_id)`, { count: 'exact' })
+      .select('id, answer, difficulty, tags, image_url, position, item_id', { count: 'exact' })
       .eq('user_id', userId)
       .eq('type', 'qa')
       .order('created_at', { ascending: false })
       .order('position')
       .range(from, to),
   )
-  return rows.map(m => {
-    const item = m.items as unknown as { title: string; shelf_id: string } | null
-    return {
-      id: m.id,
-      question: m.question ?? '',
-      answer: m.answer ?? '',
-      explanation: m.explanation ?? null,
-      difficulty: m.difficulty ?? null,
-      tags: uniqueTags(m.tags),
-      image_url: m.image_url ?? null,
-      item_id: m.item_id,
-      item_title: item?.title ?? null,
-      shelf_id: item?.shelf_id ?? null,
-      position: m.position,
-    }
-  })
+  return rows.map(m => ({
+    id: m.id,
+    answer: m.answer ?? '',
+    difficulty: m.difficulty ?? null,
+    tags: uniqueTags(m.tags),
+    image_url: m.image_url ?? null,
+    item_id: m.item_id,
+    position: m.position,
+  }))
 }
 
 export function fetchMyProgress(supabase: SupabaseClient, userId: string): Promise<QuizProgress[]> {
   return fetchAll<QuizProgress>((from, to) =>
     supabase
       .from('quiz_progress')
-      .select('memo_id, correct_count, wrong_count, level, last_result, last_answered_at, due_at, introduced_at', { count: 'exact' })
+      .select('memo_id, correct_count, wrong_count, level, last_result, due_at, introduced_at', { count: 'exact' })
       .eq('user_id', userId)
       .order('memo_id')
       .range(from, to),

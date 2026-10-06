@@ -38,6 +38,7 @@ export default function QuizStage({
   onClose,
   initialSession,
   canRecord = false,
+  prepare,
 }: {
   pool: Quiz[]
   title: string
@@ -45,6 +46,8 @@ export default function QuizStage({
   initialSession?: Session
   // ログイン中のみ成績を保存する
   canRecord?: boolean
+  // 出題する問題の本文を読み込む（問題文を後から読み込む画面で使う）
+  prepare?: (s: Session) => Promise<Session>
 }) {
   const muted = useMuted()
   const [config, setConfig] = useState<PlayConfig>(initialSession?.config ?? defaultConfig(pool))
@@ -61,6 +64,7 @@ export default function QuizStage({
   const [stamp, setStamp] = useState<{ outcome: Outcome; key: number } | null>(null)
   const [ended, setEnded] = useState<{ reason: EndReason; elapsedMs: number } | null>(null)
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
+  const [preparing, setPreparing] = useState(false)
   const stampSeq = useRef(0)
 
   // 回答は次の問題へ進むときに保存する（入力モードの「実は合ってた」を反映するため）
@@ -107,6 +111,23 @@ export default function QuizStage({
     setEnded(null)
     setTimeLeft(null)
     setStamp(null)
+  }
+
+  async function launch(s: Session) {
+    // 音の準備はタップの直後にしかできないので、読み込みを待つ前にしておく
+    unlockSound()
+    if (prepare) {
+      setPreparing(true)
+      try {
+        s = await prepare(s)
+      } catch {
+        alert('問題を読み込めませんでした。通信の状態を確かめて、もう一度お試しください。')
+        return
+      } finally {
+        setPreparing(false)
+      }
+    }
+    begin(s)
   }
 
   function finish(reason: EndReason) {
@@ -344,11 +365,11 @@ export default function QuizStage({
             </div>
             <PlaySetup pool={pool} value={config} onChange={setConfig} />
             <button
-              onClick={() => begin(startSession(pool, config))}
-              disabled={!modeAvailability(config.mode, pool).ok}
+              onClick={() => void launch(startSession(pool, config))}
+              disabled={preparing || !modeAvailability(config.mode, pool).ok}
               className="mt-5 w-full rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 py-4 text-lg font-black text-white shadow-lg transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:opacity-40"
             >
-              スタート！
+              {preparing ? '読み込み中…' : 'スタート！'}
             </button>
           </div>
         )}
@@ -533,8 +554,8 @@ export default function QuizStage({
             maxCombo={maxCombo}
             rule={rule}
             recorded={canRecord}
-            onRetryWrong={wrong => begin(startSession(wrong, { ...session.config, rule: 'normal', count: wrong.length }, pool))}
-            onRetry={() => begin(startSession(pool, session.config))}
+            onRetryWrong={wrong => void launch(startSession(wrong, { ...session.config, rule: 'normal', count: wrong.length }, pool))}
+            onRetry={() => void launch(startSession(pool, session.config))}
             onSettings={() => setSession(null)}
             onClose={onClose}
           />

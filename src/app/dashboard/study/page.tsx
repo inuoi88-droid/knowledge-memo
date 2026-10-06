@@ -1,9 +1,10 @@
 import type { Metadata } from 'next'
 import { createClient, getUser } from '@/lib/supabase/server'
-import { fetchMyProgress, fetchMyQuizzes, fetchMyShelfTree } from '@/lib/supabase/queries'
+import { fetchMyProgress, fetchMyQuizMeta, fetchMyShelfTree } from '@/lib/supabase/queries'
 import { STUDY_SETTINGS_COLUMNS, toStudySettings } from '@/lib/progress'
 import { REMINDER_COLUMNS, toReminderSettings } from '@/lib/reminders'
 import { scopeFromParams } from '@/lib/scope'
+import { packProgress, packQuizzes } from '@/lib/quizPack'
 import { getNow } from '@/lib/stage'
 import StudyHub from '@/components/study/StudyHub'
 import type { PlaySessionRecord, StudySettingsRow } from '@/types'
@@ -20,7 +21,7 @@ export default async function StudyPage({
   const user = (await getUser())!
 
   const [quizzes, progress, tree, { data: sessions }, { data: settingsRow }, { data: reminderRow }, { count: deviceCount }] = await Promise.all([
-    fetchMyQuizzes(supabase, user.id),
+    fetchMyQuizMeta(supabase, user.id),
     fetchMyProgress(supabase, user.id),
     fetchMyShelfTree(supabase, user.id),
     supabase
@@ -48,8 +49,8 @@ export default async function StudyPage({
   return (
     <StudyHub
       key={sp.notify ?? ''}
-      quizzes={quizzes}
-      progress={progress}
+      quizzes={packQuizzes(quizzes)}
+      progress={packProgress(progress)}
       sessions={(sessions ?? []) as PlaySessionRecord[]}
       nowMs={getNow()}
       settings={toStudySettings(settingsRow as StudySettingsRow | null)}

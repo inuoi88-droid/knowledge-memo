@@ -1,15 +1,17 @@
 'use client'
 
-import { useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import type { PublicSource, Quiz, QuizProgress, QuizWithSource, ShelfNode } from '@/types'
+import type { PublicSource, Quiz, ShelfNode } from '@/types'
 import { useDensity } from '@/lib/density'
 import { countTags } from '@/lib/quiz'
 import { DEFAULT_CONFIG, modeAvailability, startSession, type PlayConfig, type PlayMode, type Session } from '@/lib/play'
 import { isDue, isWeak } from '@/lib/progress'
-import { ALL_SCOPE, inScope, isAllScope, normalizeScope, scopeLabel, sourceHref, type Scope } from '@/lib/scope'
+import { ALL_SCOPE, attachSources, inScope, isAllScope, normalizeScope, scopeLabel, sourceHref, type Scope } from '@/lib/scope'
 import { unlockSound } from '@/lib/sound'
+import { unpackProgress, unpackQuizzes, type PackedProgress, type PackedQuizzes } from '@/lib/quizPack'
+import { useQuizTexts, withSessionTexts, withText } from '@/lib/quizText'
 import { generateRoomCode, roomUrl, stashLocalRoomQuizzes } from '@/lib/room'
 import { btn, card } from '@/lib/ui'
 import ScopePicker, { countByItem, quizTree } from '@/components/ScopePicker'
@@ -23,32 +25,38 @@ export type HubTab = 'play' | 'list' | 'public'
 const PAGE = 100
 
 export default function QuizHub({
-  quizzes,
+  quizzes: packed,
   tree,
   publicSources,
   initialScope,
   initialGenre,
   initialTab,
   initialMode,
-  progress,
+  progress: packedProgress,
   nowMs,
 }: {
-  quizzes: QuizWithSource[]
+  quizzes: PackedQuizzes
   tree: ShelfNode[]
   publicSources: PublicSource[]
   initialScope: Scope | null
   initialGenre: string | null
   initialTab: HubTab
   initialMode: PlayMode | null
-  progress: QuizProgress[]
+  progress: PackedProgress
   nowMs: number
 }) {
   const router = useRouter()
   const density = useDensity()
   const [tab, setTab] = useState<HubTab>(initialTab)
 
-  const counts = countByItem(quizzes)
-  const qTree = quizTree(tree, counts)
+  // 何千問にもなるので、問題の一覧から作るものは入力が変わったときだけ計算し直す
+  // 問題文・解説はまだ入っていない（texts から補う）
+  const quizzes = useMemo(() => attachSources(unpackQuizzes(packed), tree), [packed, tree])
+  const progress = useMemo(() => unpackProgress(packedProgress), [packedProgress])
+  const { texts, ensure } = useQuizTexts()
+  const [preparing, setPreparing] = useState(false)
+  const counts = useMemo(() => countByItem(quizzes), [quizzes])
+  const qTree = useMemo(() => quizTree(tree, counts), [tree, counts])
   const [scope, setScope] = useState<Scope>(() => normalizeScope(initialScope ?? ALL_SCOPE, qTree))
   const [showFilters, setShowFilters] = useState(!!initialGenre)
   const [genres, setGenres] = useState<string[]>(initialGenre ? [initialGenre] : [])
@@ -63,12 +71,14 @@ export default function QuizHub({
   const [playConfig, setPlayConfig] = useState<PlayConfig>({ ...DEFAULT_CONFIG, mode: initialMode ?? DEFAULT_CONFIG.mode })
   const [stage, setStage] = useState<{ pool: Quiz[]; title: string; session?: Session } | null>(null)
 
-  const progressMap = new Map(progress.map(p => [p.memo_id, p]))
-  const scoped = quizzes.filter(q => inScope(q, scope))
-  const tagCounts = countTags(scoped)
+  const progressMap = useMemo(() => new Map(progress.map(p => [p.memo_id, p])), [progress])
+  const scoped = useMemo(() => quizzes.filter(q => inScope(q, scope)), [quizzes, scope])
+  const tagCounts = useMemo(() => countTags(scoped), [scoped])
 
-  const kw = keyword.trim().toLowerCase()
-  const filtered = scoped.filter(q => {
+  // 入力のたびに全問を検索し直すと文字入力が重くなるので、検索は入力より少し遅れてよい
+  const deferredKeyword = useDeferredValue(keyword)
+  const kw = deferredKeyword.trim().toLowerCase()
+  const filtered = useMemo(() => scoped.filter(q => {
     if (genres.length > 0) {
       const hit = matchAll ? genres.every(g => q.tags.includes(g)) : genres.some(g => q.tags.includes(g))
       if (!hit) return false
@@ -79,9 +89,25 @@ export default function QuizHub({
       const hit = (statuses.includes('new') && !p) || (statuses.includes('weak') && isWeak(p)) || (statuses.includes('due') && isDue(p, nowMs))
       if (!hit) return false
     }
-    if (kw && ![q.question, q.answer, q.explanation ?? ''].some(s => s.toLowerCase().includes(kw))) return false
+    if (kw) {
+      const t = texts.get(q.id)
+      if (![t?.question ?? '', q.answer, t?.explanation ?? ''].some(s => s.toLowerCase().includes(kw))) return false
+    }
     return true
-  })
+  }), [scoped, genres, matchAll, levels, statuses, progressMap, nowMs, kw, texts])
+
+  // キーワードで探すときは、範囲の問題の本文をまとめて読み込む
+  const searching = kw !== ''
+  useEffect(() => {
+    if (searching) ensure(scoped.map(q => q.id)).catch(() => {})
+  }, [searching, scoped, ensure])
+  const searchLoading = searching && scoped.some(q => !texts.has(q.id))
+
+  // 一覧に出ている問題の本文だけを読み込む
+  const visibleKey = tab === 'list' ? filtered.slice(0, shown).map(q => q.id).join(',') : ''
+  useEffect(() => {
+    if (visibleKey) ensure(visibleKey.split(',')).catch(() => {})
+  }, [visibleKey, ensure])
 
   const filterCount = genres.length + levels.length + statuses.length
   const conditionLabel = [
@@ -117,15 +143,37 @@ export default function QuizHub({
     })
   }
 
-  function startPlay() {
-    unlockSound()
-    setStage({ pool: target, title: targetLabel, session: startSession(target, playConfig) })
+  async function prepareSession(s: Session): Promise<Session> {
+    return withSessionTexts(s, await ensure(s.items.map(i => i.quiz.id)))
   }
 
-  function startLocalRoom() {
-    const code = generateRoomCode()
-    stashLocalRoomQuizzes(code, targetLabel, target)
-    router.push(roomUrl(code, { local: true }))
+  async function startPlay() {
+    // 音の準備はタップの直後にしかできないので、読み込みを待つ前にしておく
+    unlockSound()
+    const pool = target
+    const title = targetLabel
+    setPreparing(true)
+    try {
+      setStage({ pool, title, session: await prepareSession(startSession(pool, playConfig)) })
+    } catch {
+      alert('問題を読み込めませんでした。通信の状態を確かめて、もう一度お試しください。')
+    } finally {
+      setPreparing(false)
+    }
+  }
+
+  async function startLocalRoom() {
+    setPreparing(true)
+    try {
+      const all = await ensure(target.map(q => q.id))
+      const code = generateRoomCode()
+      stashLocalRoomQuizzes(code, targetLabel, target.map(q => withText(q, all)))
+      router.push(roomUrl(code, { local: true }))
+    } catch {
+      alert('問題を読み込めませんでした。通信の状態を確かめて、もう一度お試しください。')
+    } finally {
+      setPreparing(false)
+    }
   }
 
   const range = (
@@ -202,15 +250,15 @@ export default function QuizHub({
               </Step>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <button
-                  onClick={startPlay}
-                  disabled={!modeAvailability(playConfig.mode, target).ok}
+                  onClick={() => void startPlay()}
+                  disabled={preparing || !modeAvailability(playConfig.mode, target).ok}
                   className="flex-1 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 py-4 text-xl font-black text-white shadow-lg transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:opacity-40"
                 >
-                  ▶ スタート！
+                  {preparing ? '読み込み中…' : '▶ スタート！'}
                 </button>
                 <button
-                  onClick={startLocalRoom}
-                  disabled={target.length === 0}
+                  onClick={() => void startLocalRoom()}
+                  disabled={preparing || target.length === 0}
                   className="rounded-2xl bg-gradient-to-r from-rose-500 to-orange-500 px-6 py-4 font-black text-white shadow-lg transition-transform hover:scale-[1.01] disabled:opacity-40"
                   title="ルームを作って友だちと早押し対決"
                 >
@@ -239,7 +287,10 @@ export default function QuizHub({
               ) : (
                 <>
                   <div className="truncate text-sm font-semibold text-gray-800">{conditionLabel}</div>
-                  <div className="text-xs text-gray-500"><b className="text-base text-indigo-700">{filtered.length}</b> 問が該当</div>
+                  <div className="text-xs text-gray-500">
+                    <b className="text-base text-indigo-700">{filtered.length}</b> 問が該当
+                    {searchLoading && <span className="ml-2 text-gray-400">（問題文を読み込み中…）</span>}
+                  </div>
                 </>
               )}
             </div>
@@ -281,7 +332,7 @@ export default function QuizHub({
               {filtered.slice(0, shown).map(q => (
                 <QuizRow
                   key={q.id}
-                  quiz={q}
+                  quiz={texts.has(q.id) ? withText(q, texts) : { ...q, question: '読み込み中…' }}
                   density={density}
                   revealAll={revealAll}
                   onTagClick={g => { setShowFilters(true); if (!genres.includes(g)) setGenres([...genres, g]) }}
@@ -332,6 +383,7 @@ export default function QuizHub({
           pool={stage.pool}
           title={stage.title}
           initialSession={stage.session}
+          prepare={prepareSession}
           canRecord
           onClose={() => { setStage(null); router.refresh() }}
         />

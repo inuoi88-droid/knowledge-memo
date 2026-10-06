@@ -52,12 +52,17 @@ export interface Quiz {
   image_url: string | null
 }
 
-export interface QuizWithSource extends Quiz {
+// サーバーから送る自分のクイズ。何千問にもなるので、本棚名などは送らず
+// 画面側で本棚の一覧（ShelfNode）から補う（attachSources）
+export interface OwnQuiz extends Quiz {
   item_id: string
-  item_title: string | null
-  shelf_id: string | null
   // 追加した順（スプレッドシートの上から）。「初めから」学習の順番
   position: number
+}
+
+export interface QuizWithSource extends OwnQuiz {
+  item_title: string | null
+  shelf_id: string | null
 }
 
 // 本棚とその中のアイテム（範囲を選ぶ画面用）
@@ -88,7 +93,6 @@ export interface QuizProgress {
   wrong_count: number
   level: number
   last_result: boolean | null
-  last_answered_at: string | null
   due_at: string | null
   introduced_at: string | null
 }
