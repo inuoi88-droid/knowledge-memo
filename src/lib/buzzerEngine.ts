@@ -1,8 +1,10 @@
 import type { Quiz } from '@/types'
 import { isCorrectAnswer } from './quiz'
 import { INTRO_MS } from './sound'
+import { IMAGE_CHAR_FACTOR, IMAGE_LEAD_MS, IMAGE_WAIT_MAX_MS } from './imagePreload'
 
-// intro: 「てれん！」を鳴らして一拍おく間。問題文はまだ配信しない
+// intro: 「てれん！」を鳴らして一拍おく間。問題文はまだ配信しない。
+//   画像つきの問題は、この間に全員が画像を読み込み（preloadUrl）、そろってから（最大 IMAGE_WAIT_MAX_MS 待って）読み上げる
 export type RoomPhase = 'lobby' | 'intro' | 'reading' | 'buzzed' | 'judged' | 'finished'
 
 export interface RoomResult {
@@ -19,8 +21,16 @@ export interface RoomState {
   total: number
   question: string
   imageUrl: string | null
+  // intro 中に先読みしておく今の問題の画像 / 次の問題の画像
+  preloadUrl: string | null
+  nextImageUrl: string | null
+  // intro 中、画像を読み込めた人数（画像つきの問題で、そろうのを待っているとき）
+  waitingImages: { ready: number; total: number } | null
+  // 読み上げ開始から問題文が出はじめるまでの時間（画像を先に見せる）
+  textDelayMs: number
   difficulty: number | null
   tags: string[]
+  // この問題の1文字あたりの時間（画像つきの問題はゆっくり）
   charMs: number
   // 問題文が出きってから押せる時間 / 押してから回答できる時間。null は無制限
   buzzWindowMs: number | null
@@ -45,6 +55,10 @@ export const INITIAL_ROOM_STATE: RoomState = {
   total: 0,
   question: '',
   imageUrl: null,
+  preloadUrl: null,
+  nextImageUrl: null,
+  waitingImages: null,
+  textDelayMs: 0,
   difficulty: null,
   tags: [],
   charMs: 110,
@@ -81,10 +95,15 @@ export function createHostEngine(opts: {
 }) {
   let state: RoomState = { ...INITIAL_ROOM_STATE, title: opts.title }
   let order: Quiz[] = []
+  let baseCharMs = INITIAL_ROOM_STATE.charMs
   let readStartedAt = 0
   let readTimer: ReturnType<typeof setTimeout> | null = null
   let answerTimer: ReturnType<typeof setTimeout> | null = null
   let introTimer: ReturnType<typeof setTimeout> | null = null
+  let waitTimer: ReturnType<typeof setTimeout> | null = null
+  // 今の問題の画像を読み込めた参加者
+  let readyIds = new Set<string>()
+  let introDone = false
 
   const current = () => order[state.index] as Quiz | undefined
 
@@ -98,7 +117,8 @@ export function createHostEngine(opts: {
     if (readTimer) clearTimeout(readTimer)
     if (answerTimer) clearTimeout(answerTimer)
     if (introTimer) clearTimeout(introTimer)
-    readTimer = answerTimer = introTimer = null
+    if (waitTimer) clearTimeout(waitTimer)
+    readTimer = answerTimer = introTimer = waitTimer = null
   }
 
   function beginReading(next: RoomState) {
@@ -107,10 +127,38 @@ export function createHostEngine(opts: {
     publish(next)
     if (next.buzzWindowMs === null) return
     const seq = next.readSeq
-    const remaining = Math.max(0, next.question.length - next.readFrom) * next.charMs
+    const remaining = next.textDelayMs + Math.max(0, next.question.length - next.readFrom) * next.charMs
     readTimer = setTimeout(() => {
       if (state.phase === 'reading' && state.readSeq === seq) reveal(null)
     }, remaining + next.buzzWindowMs)
+  }
+
+  // intro が終わり、画像つきなら全員の読み込みがそろったら読み上げを始める
+  function startReading(i: number) {
+    const q = order[i]
+    if (!q || state.phase !== 'intro' || state.index !== i) return
+    beginReading({
+      ...state,
+      phase: 'reading',
+      question: q.question,
+      imageUrl: q.image_url,
+      waitingImages: null,
+      textDelayMs: q.image_url ? IMAGE_LEAD_MS : 0,
+      readSeq: state.readSeq + 1,
+      readFrom: 0,
+    })
+  }
+
+  function maybeStartReading() {
+    const q = current()
+    if (!q || state.phase !== 'intro' || !introDone) return
+    if (!q.image_url) return startReading(state.index)
+    const active = opts.activePlayerIds()
+    const ready = active.filter(id => readyIds.has(id)).length
+    if (ready >= active.length) return startReading(state.index)
+    if (state.waitingImages?.ready !== ready || state.waitingImages?.total !== active.length) {
+      publish({ ...state, waitingImages: { ready, total: active.length } })
+    }
   }
 
   function reveal(result: RoomResult | null) {
@@ -138,10 +186,21 @@ export function createHostEngine(opts: {
       return
     }
     clearTimers()
-    const cleared: RoomState = {
+    readyIds = new Set()
+    introDone = false
+    // 「てれん！」の間は問題文を送らず、画像だけ先に読み込んでもらう
+    publish({
       ...state,
+      phase: 'intro',
       index: i,
       total: order.length,
+      question: '',
+      imageUrl: null,
+      preloadUrl: q.image_url,
+      nextImageUrl: order[i + 1]?.image_url ?? null,
+      waitingImages: null,
+      textDelayMs: 0,
+      charMs: q.image_url ? Math.round(baseCharMs * IMAGE_CHAR_FACTOR) : baseCharMs,
       difficulty: q.difficulty,
       // ジャンルは答えのヒントになるので、判定が出るまで配信しない
       tags: [],
@@ -152,21 +211,14 @@ export function createHostEngine(opts: {
       result: null,
       answer: null,
       explanation: null,
-    }
-    // 「てれん！」の間は問題文を送らず、一拍おいてから読み上げを始める
-    publish({ ...cleared, phase: 'intro', question: '', imageUrl: null })
+    })
     introTimer = setTimeout(() => {
       introTimer = null
-      if (state.phase !== 'intro' || state.index !== i) return
-      beginReading({
-        ...cleared,
-        phase: 'reading',
-        question: q.question,
-        imageUrl: q.image_url,
-        readSeq: state.readSeq + 1,
-        readFrom: 0,
-      })
+      introDone = true
+      maybeStartReading()
     }, INTRO_MS)
+    // 読み込めない人がいても、待つのはここまで
+    if (q.image_url) waitTimer = setTimeout(() => { waitTimer = null; startReading(i) }, INTRO_MS + IMAGE_WAIT_MAX_MS)
   }
 
   function judge(correct: boolean) {
@@ -194,6 +246,8 @@ export function createHostEngine(opts: {
       phase: 'reading',
       scores,
       lockedOut,
+      // 続きから再開するときは画像をもう見ているので、すぐ問題文を出す
+      textDelayMs: 0,
       readSeq: state.readSeq + 1,
       readFrom: state.paused ?? 0,
       paused: null,
@@ -211,6 +265,7 @@ export function createHostEngine(opts: {
   return {
     start(quizzes: Quiz[], settings: RoomSettings, members: { id: string; name: string }[]) {
       order = quizzes
+      baseCharMs = settings.charMs
       state = {
         ...state,
         ...settings,
@@ -224,7 +279,7 @@ export function createHostEngine(opts: {
       clearTimers()
       const revealed = Math.min(
         state.question.length,
-        state.readFrom + Math.floor((performance.now() - readStartedAt) / state.charMs),
+        state.readFrom + Math.max(0, Math.floor((performance.now() - readStartedAt - state.textDelayMs) / state.charMs)),
       )
       const scores = state.scores[p.id] ? state.scores : { ...state.scores, [p.id]: { name: p.name, score: 0 } }
       const seq = state.buzzSeq + 1
@@ -250,6 +305,13 @@ export function createHostEngine(opts: {
       publish(state)
     },
 
+    // 参加者の画面で今の問題の画像を読み込めた（失敗も含む）
+    imageReady(p: { id: string; index: number }) {
+      if (state.phase !== 'intro' || p.index !== state.index) return
+      readyIds.add(p.id)
+      maybeStartReading()
+    },
+
     judge,
     next: () => goTo(state.index + 1),
     skip: () => reveal(null),
@@ -260,7 +322,7 @@ export function createHostEngine(opts: {
       publish({
         ...INITIAL_ROOM_STATE,
         title: state.title,
-        charMs: state.charMs,
+        charMs: baseCharMs,
         buzzWindowMs: state.buzzWindowMs,
         answerLimitMs: state.answerLimitMs,
         readSeq: state.readSeq,

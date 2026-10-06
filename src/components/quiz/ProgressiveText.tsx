@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 
-// 問題文を1文字ずつ表示する。startedAt は performance.now() 基準。
+// 問題文を1文字ずつ表示する。startedAt は performance.now() 基準（未来なら、その時刻まで何も出さない）。
 // 新しい読み上げのたびに親側で key を変えて作り直す前提。
 export default function ProgressiveText({
   text,
@@ -25,7 +25,7 @@ export default function ProgressiveText({
     if (stopped !== null || startedAt === null) return
     let raf = 0
     const tick = () => {
-      const n = Math.min(text.length, from + Math.floor((performance.now() - startedAt) / charMs))
+      const n = Math.min(text.length, from + Math.max(0, Math.floor((performance.now() - startedAt) / charMs)))
       setCount(n)
       if (n < text.length) raf = requestAnimationFrame(tick)
     }

@@ -15,6 +15,7 @@ import ProgressiveText from './ProgressiveText'
 import CountPicker from './CountPicker'
 import AnswerSearchLink from './AnswerSearchLink'
 import { QuizImage } from './QuizImage'
+import { preloadImage, useImageReady } from '@/lib/imagePreload'
 import { DifficultyBadge } from './Difficulty'
 
 type Role = 'host' | 'player'
@@ -171,6 +172,7 @@ function Room({ code, source, local, wantsHost, me }: { code: string; source: Qu
       })
       .on('broadcast', { event: 'buzz' }, ({ payload }) => engineRef.current?.buzz(payload as { id: string; name: string }))
       .on('broadcast', { event: 'answer' }, ({ payload }) => engineRef.current?.answer(payload as { id: string; text: string }))
+      .on('broadcast', { event: 'image-ready' }, ({ payload }) => engineRef.current?.imageReady(payload as { id: string; index: number }))
       .on('broadcast', { event: 'hello' }, () => engineRef.current?.resync())
       .subscribe(s => {
         if (s === 'SUBSCRIBED') {
@@ -216,6 +218,30 @@ function Room({ code, source, local, wantsHost, me }: { code: string; source: Qu
     engine.resync()
     return () => { engine.dispose(); engineRef.current = null }
   }, [isHost, pool, apply])
+
+  // 画像つきの問題：「てれん！」の間に画像を読み込み、読み込めたらホストに知らせる（全員そろうと読み上げが始まる）
+  const introImage = view.phase === 'intro' ? view.preloadUrl : null
+  const introIndex = view.index
+  useEffect(() => {
+    if (!introImage) return
+    let alive = true
+    void preloadImage(introImage).then(() => {
+      if (!alive) return
+      const p = { id: me.id, index: introIndex }
+      if (isHostRef.current) engineRef.current?.imageReady(p)
+      else channelRef.current?.send({ type: 'broadcast', event: 'image-ready', payload: p })
+    })
+    return () => { alive = false }
+  }, [introImage, introIndex, me.id])
+
+  // 次の問題の画像も先に読み込んでおく
+  useEffect(() => {
+    if (view.nextImageUrl) void preloadImage(view.nextImageUrl)
+  }, [view.nextImageUrl])
+
+  // 自分の画面に画像が出るまでは問題文を出さない
+  const imageShown = useImageReady(view.imageUrl)
+  const textStart = view.phase === 'reading' && readStart !== null && imageShown ? readStart + view.textDelayMs : null
 
   const canBuzz = view.phase === 'reading' && !view.lockedOut.includes(me.id) && !pressed
 
@@ -319,7 +345,7 @@ function Room({ code, source, local, wantsHost, me }: { code: string; source: Qu
                       <Opt active={random} onClick={() => setRandom(true)}>ランダム</Opt>
                       <Opt active={!random} onClick={() => setRandom(false)}>そのまま</Opt>
                     </Setting>
-                    <Setting label="表示スピード">
+                    <Setting label="表示スピード（画像つきの問題は、画像を先に見せてから1.5倍ゆっくり）">
                       {(Object.keys(SPEEDS) as Speed[]).map(s => (
                         <Opt key={s} active={speed === s} onClick={() => setSpeed(s)}>{SPEEDS[s].label}</Opt>
                       ))}
@@ -357,6 +383,12 @@ function Room({ code, source, local, wantsHost, me }: { code: string; source: Qu
           <div className={`flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-3xl ${STAGE_BG} text-white shadow-xl`}>
             <div key={view.index} className="animate-intro text-6xl font-black drop-shadow-lg">第{view.index + 1}問</div>
             <div className="text-xs opacity-70">⏱ 押せる {limitLabel(view.buzzWindowMs)} ・ 回答 {limitLabel(view.answerLimitMs)}</div>
+            {view.preloadUrl && (
+              <div className="rounded-full bg-white/10 px-3 py-1 text-xs">
+                🖼️ 画像の問題です
+                {view.waitingImages && ` ・ みんなの読み込みを待っています（${view.waitingImages.ready}/${view.waitingImages.total}人）`}
+              </div>
+            )}
           </div>
         )}
 
@@ -374,13 +406,14 @@ function Room({ code, source, local, wantsHost, me }: { code: string; source: Qu
                 <DifficultyBadge level={view.difficulty} showLabel />
               </div>
               {view.imageUrl && <QuizImage src={view.imageUrl} className="mx-auto mb-3 max-h-56 rounded-xl object-contain" />}
+              {view.imageUrl && !imageShown && <p className="mb-2 text-center text-xs text-gray-400">🖼️ 画像を読み込んでいます…</p>}
               <div className="flex min-h-[3.5rem] gap-2 text-xl leading-relaxed sm:text-2xl">
                 <span className="font-black text-indigo-600">Q.</span>
                 <ProgressiveText
                   key={view.readSeq}
                   text={view.question}
                   from={view.readFrom}
-                  startedAt={view.phase === 'reading' ? readStart : null}
+                  startedAt={textStart}
                   charMs={view.charMs}
                   stopped={view.phase === 'reading' ? null : view.paused ?? view.readFrom}
                   className="flex-1 font-bold"
@@ -398,7 +431,7 @@ function Room({ code, source, local, wantsHost, me }: { code: string; source: Qu
               {view.phase === 'reading' && view.buzzWindowMs !== null && (
                 <TimeBar
                   key={view.readSeq}
-                  startAt={readStart === null ? null : readStart + Math.max(0, view.question.length - view.readFrom) * view.charMs}
+                  startAt={readStart === null ? null : readStart + view.textDelayMs + Math.max(0, view.question.length - view.readFrom) * view.charMs}
                   totalMs={view.buzzWindowMs}
                   pendingLabel={`問題文を表示中… 出きってから${limitLabel(view.buzzWindowMs)}押せます`}
                   label="押せるのは"

@@ -19,7 +19,7 @@ export const MODES: { id: PlayMode; icon: string; name: string; desc: string; to
   { id: 'typing', icon: '⌨️', name: '入力', desc: '答えを打って自動採点', tone: 'from-emerald-500 to-teal-500' },
   { id: 'flash', icon: '🃏', name: 'めくる', desc: '答えを見て自己採点', tone: 'from-violet-500 to-fuchsia-500' },
   { id: 'buzzer', icon: '⚡', name: '早押し練習', desc: '問題文が少しずつ出る', tone: 'from-amber-500 to-rose-500' },
-  { id: 'visual', icon: '🖼️', name: 'ビジュアル', desc: '画像がだんだんはっきり', tone: 'from-cyan-500 to-blue-600' },
+  { id: 'visual', icon: '🖼️', name: 'ビジュアル', desc: '画像を見て早押し', tone: 'from-cyan-500 to-blue-600' },
 ]
 
 export const RULES: { id: PlayRule; icon: string; name: string; desc: string }[] = [
@@ -49,7 +49,7 @@ export function modeAvailability(mode: PlayMode, pool: readonly Quiz[]): { ok: b
 }
 
 export function ruleAvailable(mode: PlayMode, rule: PlayRule): boolean {
-  // 文字や画像を少しずつ見せるモードは時間を競う遊び方と相性が悪いので除外
+  // 問題文を少しずつ見せるモードは時間を競う遊び方と相性が悪いので除外
   return !(rule === 'timeattack' && (mode === 'buzzer' || mode === 'visual'))
 }
 

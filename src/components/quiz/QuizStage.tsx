@@ -15,7 +15,8 @@ import PlaySetup from './PlaySetup'
 import ProgressiveText from './ProgressiveText'
 import { DifficultyBadge } from './Difficulty'
 import AnswerSearchLink from './AnswerSearchLink'
-import { QuizImage, VisualReveal, VISUAL_REVEAL_MS } from './QuizImage'
+import { QuizImage } from './QuizImage'
+import { IMAGE_CHAR_FACTOR, IMAGE_LEAD_MS, preloadImage, useImageReady, waitForImage } from '@/lib/imagePreload'
 
 type Phase = 'intro' | 'asking' | 'revealed'
 type Outcome = 'correct' | 'wrong'
@@ -80,6 +81,11 @@ export default function QuizStage({
   const rule = session?.config.rule ?? config.rule
   const quiz = item?.quiz
   const correctCount = log.filter(l => l.outcome === 'correct').length
+  // 画像つきの問題は、画像を先に見せてから問題文をゆっくり読み上げる
+  const charMs = quiz?.image_url ? Math.round(CHAR_MS * IMAGE_CHAR_FACTOR) : CHAR_MS
+  const introImage = screen === 'play' && phase === 'intro' ? quiz?.image_url ?? null : null
+  const introImageReady = useImageReady(introImage)
+  const nextImage = session?.items[idx + 1]?.quiz.image_url ?? null
 
   function resetTurn(nextMode: PlayConfig['mode']) {
     setPhase(usesIntro(nextMode) ? 'intro' : 'asking')
@@ -162,8 +168,8 @@ export default function QuizStage({
 
   function press() {
     if (phase !== 'asking' || stopped !== null || readStart === null || !quiz) return
-    const elapsed = performance.now() - readStart
-    setStopped(mode === 'visual' ? Math.min(1, elapsed / VISUAL_REVEAL_MS) : Math.min(quiz.question.length, Math.floor(elapsed / CHAR_MS)))
+    const elapsed = Math.max(0, performance.now() - readStart)
+    setStopped(Math.min(quiz.question.length, Math.floor(elapsed / charMs)))
     sfx.buzz()
   }
 
@@ -183,16 +189,23 @@ export default function QuizStage({
     onClose()
   }
 
-  // 「てれん！」→ 一拍おいてから出題
+  // 「てれん！」→ 一拍おいてから出題。画像つきの問題は画像の読み込みを待ち、画像を先に見せてから読み上げる
   useEffect(() => {
     if (screen !== 'play' || phase !== 'intro') return
     sfx.jingle()
-    const id = setTimeout(() => {
-      setReadStart(performance.now())
+    let alive = true
+    void Promise.all([new Promise(r => setTimeout(r, INTRO_MS)), waitForImage(introImage)]).then(() => {
+      if (!alive) return
+      setReadStart(performance.now() + (introImage ? IMAGE_LEAD_MS : 0))
       setPhase('asking')
-    }, INTRO_MS)
-    return () => clearTimeout(id)
-  }, [screen, phase, idx])
+    })
+    return () => { alive = false }
+  }, [screen, phase, idx, introImage])
+
+  // 次の問題の画像を先に読み込んでおく
+  useEffect(() => {
+    if (nextImage) void preloadImage(nextImage)
+  }, [nextImage])
 
   // タイムアタックの残り時間
   useEffect(() => {
@@ -345,6 +358,7 @@ export default function QuizStage({
             {phase === 'intro' ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 py-20">
                 <div className="animate-intro text-6xl font-black drop-shadow-lg">第{idx + 1}問</div>
+                {introImage && !introImageReady && <div className="text-xs opacity-70">🖼️ 画像を読み込んでいます…</div>}
               </div>
             ) : (
               <>
@@ -354,24 +368,18 @@ export default function QuizStage({
                     <span className="rounded-full bg-indigo-600 px-3 py-0.5 text-sm font-black text-white">Q{idx + 1}</span>
                     <DifficultyBadge level={quiz.difficulty} showLabel />
                   </div>
-                  {mode === 'visual' && quiz.image_url ? (
-                    <div className="mb-4">
-                      <VisualReveal
-                        key={idx}
-                        src={quiz.image_url}
-                        startedAt={readStart}
-                        stopped={phase === 'revealed' ? 1 : stopped}
-                      />
-                    </div>
-                  ) : quiz.image_url ? (
-                    <QuizImage src={quiz.image_url} className="mx-auto mb-4 max-h-60 rounded-xl object-contain" />
-                  ) : null}
-                  {mode === 'buzzer' ? (
+                  {quiz.image_url && (
+                    <QuizImage
+                      src={quiz.image_url}
+                      className={`mx-auto mb-4 rounded-xl object-contain ${mode === 'visual' ? 'max-h-[42vh]' : 'max-h-60'}`}
+                    />
+                  )}
+                  {mode === 'buzzer' || mode === 'visual' ? (
                     <ProgressiveText
                       key={idx}
                       text={quiz.question}
                       startedAt={readStart}
-                      charMs={CHAR_MS}
+                      charMs={charMs}
                       stopped={phase === 'revealed' ? quiz.question.length : stopped}
                       className="text-xl font-bold leading-relaxed sm:text-2xl"
                     />
@@ -386,9 +394,11 @@ export default function QuizStage({
                   )}
                   {(mode === 'buzzer' || mode === 'visual') && stopped !== null && phase === 'asking' && (
                     <p className="mt-3 text-center text-sm font-bold text-rose-600">
-                      {mode === 'buzzer'
-                        ? stopped >= quiz.question.length ? '最後まで読まれました' : `${stopped}文字目で押しました！`
-                        : `${Math.round(stopped * 100)}% の見え方で押しました！`}
+                      {stopped >= quiz.question.length
+                        ? '最後まで読まれました'
+                        : stopped === 0
+                          ? quiz.image_url ? '画像だけで押しました！' : '読まれる前に押しました！'
+                          : `${stopped}文字目で押しました！`}
                     </p>
                   )}
                 </div>
